@@ -1,0 +1,152 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /Status1
+        - /Map1
+        - /LaserScan1
+        - /Local Costmap1
+        - /Global Costmap1
+        - /Exploration1
+      Splitter Ratio: 0.5
+    Tree Height: 617
+  - Class: rviz_common/Selection
+    Name: Selection
+  - Class: rviz_common/Tool Properties
+    Name: Tool Properties
+    Splitter Ratio: 0.5
+  - Class: rviz_common/Views
+    Name: Views
+    Splitter Ratio: 0.5
+
+Visualization Manager:
+  Class: ""
+  Displays:
+    # Grid de referencia
+    - Alpha: 0.5
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Name: Grid
+      Value: true
+
+    # Mapa SLAM
+    - Alpha: 0.7
+      Class: rviz_default_plugins/Map
+      Color Scheme: map
+      Draw Behind: false
+      Enabled: true
+      Name: Map
+      Topic:
+        Value: /map
+      Value: true
+
+    # Modelo del robot
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Enabled: true
+      Name: RobotModel
+      Value: true
+
+    # Datos del lidar
+    - Alpha: 1
+      Class: rviz_default_plugins/LaserScan
+      Color: 255; 255; 255
+      Enabled: true
+      Name: LaserScan
+      Size (Pixels): 3
+      Style: Flat Squares
+      Topic:
+        Value: /scan
+      Value: true
+
+    # Costmap local
+    - Alpha: 0.3
+      Class: rviz_default_plugins/Map
+      Color Scheme: costmap
+      Enabled: true
+      Name: Local Costmap
+      Topic:
+        Value: /local_costmap/costmap
+      Value: true
+
+    # Costmap global
+    - Alpha: 0.3
+      Class: rviz_default_plugins/Map
+      Color Scheme: costmap
+      Enabled: true
+      Name: Global Costmap
+      Topic:
+        Value: /global_costmap/costmap
+      Value: true
+
+    # Plan global
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 25; 255; 0
+      Enabled: true
+      Name: Global Path
+      Topic:
+        Value: /plan
+      Value: true
+
+    # Fronteras de exploración
+    - Alpha: 1
+      Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Exploration Frontiers
+      Topic:
+        Value: /explore/frontiers
+      Value: true
+
+    # Objetivo actual de exploración
+    - Alpha: 1
+      Class: rviz_default_plugins/Pose
+      Color: 255; 25; 0
+      Enabled: true
+      Name: Exploration Goal
+      Topic:
+        Value: /goal_pose
+      Value: true
+
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+    - Class: nav2_rviz_plugins/GoalTool
+
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 15
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Name: Current View
+      Pitch: 1.2
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+      Yaw: 0
+
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 846
+  Width: 1200
