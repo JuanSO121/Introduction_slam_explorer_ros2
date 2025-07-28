@@ -49,13 +49,13 @@ explore_node:
     costmap_topic: /global_costmap/costmap
     costmap_updates_topic: /global_costmap/costmap_updates
     visualize: true
-    planner_frequency: 0.3
-    progress_timeout: 30.0
+    planner_frequency: 0.2  # Reducido para mundo más grande
+    progress_timeout: 60.0  # Aumentado para áreas más grandes
     potential_scale: 3.0
     orientation_scale: 0.0
     gain_scale: 1.0
-    transform_tolerance: 0.2
-    min_frontier_size: 0.5
+    transform_tolerance: 0.3
+    min_frontier_size: 0.3  # Reducido para detectar más fronteras
 
 # Configuración del behavior tree navigator
 bt_navigator:
@@ -173,8 +173,11 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       resolution: 0.05
+      width: 150  # Aumentado para casa más grande
+      height: 150  # Aumentado para casa más grande
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      # ... resto de configuración igual
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
