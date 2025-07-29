@@ -1,10 +1,13 @@
+# Archivo: ~/ros2_ws/src/tutorial_pkg/launch/apartment_explore.launch.py
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, ExecuteProcess
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from nav2_common.launch import RewrittenYaml
+import os
 
 
 def generate_launch_description():
@@ -13,11 +16,13 @@ def generate_launch_description():
     nav2_bringup_dir = FindPackageShare('nav2_bringup')
     slam_toolbox_dir = FindPackageShare('slam_toolbox')
     explore_lite_dir = FindPackageShare('explore_lite')
+    turtlebot3_gazebo_dir = FindPackageShare('turtlebot3_gazebo')
 
     # Variables de configuración
     use_sim_time = LaunchConfiguration('use_sim_time')
     params_file = LaunchConfiguration('params_file')
     slam_params_file = LaunchConfiguration('slam_params_file')
+    world_file = LaunchConfiguration('world_file')
 
     # Argumentos de lanzamiento
     declare_use_sim_time_cmd = DeclareLaunchArgument(
@@ -38,6 +43,12 @@ def generate_launch_description():
         description='Full path to the ROS2 parameters file for SLAM'
     )
 
+    declare_world_file_cmd = DeclareLaunchArgument(
+        'world_file',
+        default_value=PathJoinSubstitution([tutorial_dir, 'worlds', 'apartment_world.world']),
+        description='Full path to world file to load'
+    )
+
     # Reescribir parámetros para incluir use_sim_time
     configured_params = RewrittenYaml(
         source_file=params_file,
@@ -45,14 +56,31 @@ def generate_launch_description():
         convert_types=True
     )
 
-    # Lanzar Gazebo + TurtleBot3
-    gazebo_launch = IncludeLaunchDescription(
+    # Lanzar Gazebo con el mundo del apartamento
+    gazebo_launch = ExecuteProcess(
+        cmd=['gazebo', '--verbose', '-s', 'libgazebo_ros_init.so', 
+             '-s', 'libgazebo_ros_factory.so', world_file],
+        output='screen'
+    )
+
+    # Spawn del robot TurtleBot3 en posición inicial del apartamento
+    spawn_turtlebot_cmd = Node(
+        package='gazebo_ros',
+        executable='spawn_entity.py',
+        arguments=['-entity', 'turtlebot3_waffle',
+                   '-file', PathJoinSubstitution([turtlebot3_gazebo_dir, 'models', 
+                                                 'turtlebot3_waffle', 'model.sdf']),
+                   '-x', '1.0',  # Posición inicial en el apartamento (sala)
+                   '-y', '1.0',
+                   '-z', '0.01',
+                   '-Y', '0.0'],
+        output='screen'
+    )
+
+    # Robot State Publisher
+    robot_state_publisher_cmd = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
-            PathJoinSubstitution([
-                FindPackageShare('turtlebot3_gazebo'),
-                'launch',
-                'turtlebot3_world.launch.py'
-            ])
+            PathJoinSubstitution([turtlebot3_gazebo_dir, 'launch', 'robot_state_publisher.launch.py'])
         ]),
         launch_arguments={'use_sim_time': use_sim_time}.items()
     )
@@ -105,7 +133,10 @@ def generate_launch_description():
         declare_use_sim_time_cmd,
         declare_params_file_cmd,
         declare_slam_params_file_cmd,
+        declare_world_file_cmd,
         gazebo_launch,
+        spawn_turtlebot_cmd,
+        robot_state_publisher_cmd,
         slam_launch,
         nav2_launch,
         explore_launch,

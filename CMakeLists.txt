@@ -14,6 +14,7 @@ install(DIRECTORY
   launch
   maps
   rviz
+  worlds         
   DESTINATION share/${PROJECT_NAME}
 )
 
