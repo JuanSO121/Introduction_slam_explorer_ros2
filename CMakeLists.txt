@@ -13,6 +13,7 @@ install(DIRECTORY
   config
   launch
   maps
+  models 
   rviz
   worlds         
   DESTINATION share/${PROJECT_NAME}

@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="salon_model">
+    <static>true</static>
+    <link name="salon_link">
+      <pose>0 0 0 0 0 0</pose>
+      <collision name="salon_collision">
+        <geometry>
+          <mesh>
+            <uri>model://salon_model/meshes/salon.dae</uri>
+            <scale>1 1 1</scale>
+          </mesh>
+        </geometry>
+      </collision>
+      <visual name="salon_visual">
+        <geometry>
+          <mesh>
+            <uri>model://salon_model/meshes/salon.dae</uri>
+            <scale>1 1 1</scale>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1.0 1.0 1.0 1.0</ambient>
+          <diffuse>1.0 1.0 1.0 1.0</diffuse>
+          <specular>0.1 0.1 0.1 1.0</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

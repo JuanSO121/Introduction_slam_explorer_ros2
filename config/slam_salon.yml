@@ -1,0 +1,62 @@
+# Archivo: ~/ros2_ws/src/tutorial_pkg/config/slam_salon.yaml
+# Configuración SLAM optimizada para salón con modelo .dae
+
+slam_toolbox:
+  ros__parameters:
+    # Configuración básica
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_footprint
+    scan_topic: /scan
+    use_map_saver: true
+    use_sim_time: true
+
+    # Configuración específica para salón
+    mode: mapping                    # Modo de mapeo activo
+    
+    # Resolución y tamaño del mapa
+    resolution: 0.05                # 5cm por pixel para buena precisión
+    minimum_travel_distance: 0.2    # Distancia mínima para procesar
+    minimum_travel_heading: 0.2     # Cambio angular mínimo
+    map_update_interval: 2.0        # Actualización cada 2 segundos
+    
+    # Parámetros de scan matching para interiores
+    scan_buffer_size: 20            # Buffer más grande para salones
+    scan_buffer_maximum_scan_distance: 15.0  # Distancia máxima para salón
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 0.5
+    
+    # Optimización para entornos de salón
+    loop_search_maximum_distance: 4.0      # Mayor distancia de búsqueda
+    do_loop_closing: true                  # Importante para salones
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+    
+    # Correlación y búsqueda
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.03
+    
+    # Parámetros de optimización
+    fine_search_angle_offset: 0.00349     # ~0.2 grados
+    coarse_search_angle_offset: 0.349     # ~20 grados
+    coarse_angle_resolution: 0.0349       # ~2 grados
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true
+    
+    # Configuración para muebles y obstáculos del salón
+    max_laser_range: 8.0                  # Rango amplio para salón
+    minimum_time_interval: 0.5
+    transform_publish_period: 0.02        # 50Hz para navegación suave
+    map_start_pose: [0.0, 0.0, 0.0]      # Posición inicial
+    
+    # Configuración de memoria y procesamiento
+    enable_interactive_mode: true
+    throttle_scans: 1                     # Procesar todos los scans
+    
+    # Configuración para guardado automático
+    map_file_name: salon_map
+    map_start_at_dock: true
