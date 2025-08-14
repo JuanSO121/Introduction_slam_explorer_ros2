@@ -1,152 +1,228 @@
-#exploration_monitor.py
+#!/usr/bin/env python3
 """
-Monitor de exploración que verifica el progreso y reinicia
-la exploración si se detiene prematuramente.
+Nodo para monitorear la exploración y reiniciarla automáticamente
+si se detiene por falta de fronteras.
 """
 
 import rclpy
 from rclpy.node import Node
+from geometry_msgs.msg import Twist, PoseStamped
 from nav_msgs.msg import OccupancyGrid
-from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import String
+from std_msgs.msg import Bool
+from sensor_msgs.msg import LaserScan
 import numpy as np
 import time
+import math
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+
 
 class ExplorationMonitor(Node):
     def __init__(self):
         super().__init__('exploration_monitor')
         
-        # Suscriptores
-        self.map_subscriber = self.create_subscription(
-            OccupancyGrid,
-            '/map',
-            self.map_callback,
-            10
+        # QoS profiles
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
         )
         
-        self.goal_subscriber = self.create_subscription(
-            PoseStamped,
-            '/explore/goal',
-            self.goal_callback,
-            10
+        # Parámetros
+        self.last_exploration_time = time.time()
+        self.last_map_size = 0
+        self.robot_stuck_counter = 0
+        self.exploration_timeout = 60.0  # 60 segundos sin progreso
+        self.min_map_growth = 10  # Mínimo crecimiento del mapa
+        self.max_stuck_time = 30.0  # Tiempo máximo sin movimiento
+        
+        # Estado del robot
+        self.current_velocity = Twist()
+        self.last_position = None
+        self.position_history = []
+        self.last_scan_ranges = None
+        
+        # Subscribers
+        self.map_sub = self.create_subscription(
+            OccupancyGrid, 
+            '/map', 
+            self.map_callback, 
+            qos_profile
         )
         
-        # Publicador para reiniciar exploración
-        self.explore_publisher = self.create_publisher(
-            String,
-            '/explore/resume',
-            10
+        self.cmd_vel_sub = self.create_subscription(
+            Twist, 
+            '/cmd_vel', 
+            self.cmd_vel_callback, 
+            qos_profile
         )
         
-        # Variables de estado
-        self.last_map_update = time.time()
-        self.last_goal_time = time.time()
-        self.map_area = 0
-        self.unknown_area = 0
-        self.free_area = 0
-        self.occupied_area = 0
+        self.scan_sub = self.create_subscription(
+            LaserScan,
+            '/scan',
+            self.scan_callback,
+            qos_profile
+        )
         
-        # Contadores
-        self.stuck_counter = 0
-        self.total_goals = 0
+        # Publishers
+        self.exploration_goal_pub = self.create_publisher(
+            PoseStamped, 
+            '/goal_pose', 
+            qos_profile
+        )
         
-        # Timer para verificación periódica
-        self.timer = self.create_timer(10.0, self.check_exploration_progress)
+        self.cmd_vel_pub = self.create_publisher(
+            Twist,
+            '/cmd_vel',
+            qos_profile
+        )
         
-        self.get_logger().info('Exploration Monitor iniciado')
-
+        # Timer para monitoreo
+        self.monitor_timer = self.create_timer(5.0, self.monitor_exploration)
+        
+        self.get_logger().info("Monitor de exploración iniciado")
+    
     def map_callback(self, msg):
-        """Callback para analizar el mapa"""
-        self.last_map_update = time.time()
+        """Monitorea el crecimiento del mapa"""
+        current_map_size = sum(1 for cell in msg.data if cell >= 0)  # Celdas conocidas
         
-        # Convertir mapa a numpy array
-        map_data = np.array(msg.data).reshape((msg.info.height, msg.info.width))
+        if current_map_size > self.last_map_size + self.min_map_growth:
+            self.last_exploration_time = time.time()
+            self.last_map_size = current_map_size
+            self.get_logger().debug(f"Mapa creciendo: {current_map_size} celdas")
+    
+    def cmd_vel_callback(self, msg):
+        """Monitorea el movimiento del robot"""
+        self.current_velocity = msg
         
-        # Calcular estadísticas
-        total_cells = map_data.size
-        unknown_cells = np.count_nonzero(map_data == -1)
-        free_cells = np.count_nonzero(map_data == 0)
-        occupied_cells = np.count_nonzero(map_data == 100)
+        # Verificar si el robot se está moviendo
+        is_moving = (abs(msg.linear.x) > 0.01 or abs(msg.angular.z) > 0.01)
         
-        # Calcular áreas (en m²)
-        cell_area = msg.info.resolution ** 2
-        self.map_area = total_cells * cell_area
-        self.unknown_area = unknown_cells * cell_area
-        self.free_area = free_cells * cell_area
-        self.occupied_area = occupied_cells * cell_area
-        
-        # Calcular porcentaje explorado
-        explored_percentage = ((free_cells + occupied_cells) / total_cells) * 100
-        
-        # Log de progreso cada 30 segundos
-        current_time = time.time()
-        if not hasattr(self, 'last_log_time'):
-            self.last_log_time = current_time
-        
-        if current_time - self.last_log_time > 30.0:
-            self.get_logger().info(
-                f'Progreso de exploración: {explored_percentage:.1f}% '
-                f'(Libre: {self.free_area:.1f}m², Ocupado: {self.occupied_area:.1f}m², '
-                f'Desconocido: {self.unknown_area:.1f}m²)'
-            )
-            self.last_log_time = current_time
-
-    def goal_callback(self, msg):
-        """Callback para objetivos de exploración"""
-        self.last_goal_time = time.time()
-        self.total_goals += 1
-        self.stuck_counter = 0  # Reset contador si hay nueva meta
-        
-        self.get_logger().info(
-            f'Nueva meta de exploración #{self.total_goals}: '
-            f'x={msg.pose.position.x:.2f}, y={msg.pose.position.y:.2f}'
-        )
-
-    def check_exploration_progress(self):
-        """Verifica el progreso de exploración y toma acciones correctivas"""
-        current_time = time.time()
-        
-        # Verificar si ha pasado mucho tiempo sin nuevas metas
-        time_since_last_goal = current_time - self.last_goal_time
-        
-        if time_since_last_goal > 60.0:  # 1 minuto sin metas
-            self.stuck_counter += 1
-            
-            # Calcular porcentaje explorado
-            if self.map_area > 0:
-                explored_percentage = ((self.free_area + self.occupied_area) / self.map_area) * 100
-                
-                self.get_logger().warn(
-                    f'Sin nuevas metas por {time_since_last_goal:.0f}s. '
-                    f'Explorado: {explored_percentage:.1f}%'
-                )
-                
-                # Si aún hay área desconocida significativa, reintentar
-                if explored_percentage < 85.0 and self.unknown_area > 2.0:  # Menos del 85% y >2m² desconocido
-                    if self.stuck_counter >= 2:  # Después de 2 minutos sin metas
-                        self.get_logger().warn('Reintentando exploración...')
-                        self.restart_exploration()
-                        self.stuck_counter = 0
-                else:
-                    self.get_logger().info(
-                        f'Exploración completada: {explored_percentage:.1f}% '
-                        f'(área desconocida restante: {self.unknown_area:.1f}m²)'
-                    )
+        if is_moving:
+            self.robot_stuck_counter = 0
         else:
-            self.stuck_counter = 0
-
+            self.robot_stuck_counter += 1
+    
+    def scan_callback(self, msg):
+        """Analiza datos del láser para detectar espacios explorables"""
+        self.last_scan_ranges = msg.ranges
+    
+    def find_exploration_point(self):
+        """Encuentra un punto para continuar la exploración"""
+        if not self.last_scan_ranges:
+            return None
+        
+        ranges = np.array(self.last_scan_ranges)
+        angles = np.linspace(-math.pi, math.pi, len(ranges))
+        
+        # Buscar la dirección con mayor espacio libre
+        max_range = 0
+        best_angle = 0
+        
+        for i, (r, angle) in enumerate(zip(ranges, angles)):
+            if not math.isinf(r) and r > max_range and r > 1.0:
+                max_range = r
+                best_angle = angle
+        
+        if max_range > 1.5:  # Si hay espacio suficiente
+            # Crear objetivo en esa dirección
+            goal = PoseStamped()
+            goal.header.frame_id = "base_footprint"
+            goal.header.stamp = self.get_clock().now().to_msg()
+            
+            # Objetivo a 70% de la distancia máxima detectada
+            distance = min(max_range * 0.7, 3.0)
+            goal.pose.position.x = distance * math.cos(best_angle)
+            goal.pose.position.y = distance * math.sin(best_angle)
+            goal.pose.position.z = 0.0
+            
+            # Orientación hacia el objetivo
+            goal.pose.orientation.z = math.sin(best_angle / 2.0)
+            goal.pose.orientation.w = math.cos(best_angle / 2.0)
+            
+            return goal
+        
+        return None
+    
+    def perform_exploration_spin(self):
+        """Hace que el robot gire para buscar nuevas áreas"""
+        self.get_logger().info("Realizando giro de exploración...")
+        
+        twist = Twist()
+        twist.angular.z = 0.5  # Velocidad angular moderada
+        
+        # Publicar comando de giro por 3 segundos
+        for _ in range(15):  # 3 segundos a 5Hz
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.2)
+        
+        # Detener el robot
+        stop_twist = Twist()
+        self.cmd_vel_pub.publish(stop_twist)
+    
+    def send_random_exploration_goal(self):
+        """Envía un objetivo aleatorio para continuar la exploración"""
+        goal = PoseStamped()
+        goal.header.frame_id = "map"
+        goal.header.stamp = self.get_clock().now().to_msg()
+        
+        # Objetivo aleatorio en un radio de 3 metros
+        angle = np.random.uniform(-math.pi, math.pi)
+        distance = np.random.uniform(1.5, 3.0)
+        
+        goal.pose.position.x = distance * math.cos(angle)
+        goal.pose.position.y = distance * math.sin(angle)
+        goal.pose.position.z = 0.0
+        
+        # Orientación aleatoria
+        goal.pose.orientation.z = math.sin(angle / 2.0)
+        goal.pose.orientation.w = math.cos(angle / 2.0)
+        
+        self.exploration_goal_pub.publish(goal)
+        self.get_logger().info(f"Enviado objetivo de exploración: x={goal.pose.position.x:.2f}, y={goal.pose.position.y:.2f}")
+    
+    def monitor_exploration(self):
+        """Función principal de monitoreo"""
+        current_time = time.time()
+        time_since_exploration = current_time - self.last_exploration_time
+        
+        # Verificar si la exploración se ha detenido
+        exploration_stalled = time_since_exploration > self.exploration_timeout
+        robot_stuck = self.robot_stuck_counter > (self.max_stuck_time / 5.0)  # 5 segundos de timer
+        
+        if exploration_stalled or robot_stuck:
+            self.get_logger().warn(f"Exploración detenida detectada:")
+            self.get_logger().warn(f"  - Tiempo sin progreso: {time_since_exploration:.1f}s")
+            self.get_logger().warn(f"  - Robot inmóvil por: {self.robot_stuck_counter * 5.0:.1f}s")
+            
+            # Reiniciar exploración
+            self.restart_exploration()
+    
     def restart_exploration(self):
-        """Reinicia el proceso de exploración"""
-        try:
-            # Publicar comando de reinicio (si explore_lite lo soporta)
-            msg = String()
-            msg.data = "restart"
-            self.explore_publisher.publish(msg)
-            
-            self.get_logger().info('Comando de reinicio de exploración enviado')
-            
-        except Exception as e:
-            self.get_logger().error(f'Error al reiniciar exploración: {str(e)}')
+        """Reinicia la exploración cuando se detecta que se ha detenido"""
+        self.get_logger().info("🔄 REINICIANDO EXPLORACIÓN...")
+        
+        # 1. Primero hacer un giro para actualizar el mapa
+        self.perform_exploration_spin()
+        
+        # 2. Buscar un punto de exploración basado en el láser
+        exploration_goal = self.find_exploration_point()
+        
+        if exploration_goal:
+            # Cambiar frame a map
+            exploration_goal.header.frame_id = "map"
+            self.exploration_goal_pub.publish(exploration_goal)
+            self.get_logger().info("✅ Objetivo de exploración enviado basado en láser")
+        else:
+            # 3. Si no hay punto basado en láser, enviar objetivo aleatorio
+            self.send_random_exploration_goal()
+            self.get_logger().info("✅ Objetivo de exploración aleatorio enviado")
+        
+        # Resetear contadores
+        self.last_exploration_time = time.time()
+        self.robot_stuck_counter = 0
+        
+        self.get_logger().info("🚀 Exploración reiniciada exitosamente")
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -157,9 +233,10 @@ def main(args=None):
         rclpy.spin(exploration_monitor)
     except KeyboardInterrupt:
         pass
-    
-    exploration_monitor.destroy_node()
-    rclpy.shutdown()
+    finally:
+        exploration_monitor.destroy_node()
+        rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

@@ -48,7 +48,7 @@ slam_toolbox:
     use_response_expansion: true
     
     # Configuración para muebles y obstáculos del salón
-    max_laser_range: 8.0                  # Rango amplio para salón
+    max_laser_range: 3.5                  # Rango amplio para salón
     minimum_time_interval: 0.5
     transform_publish_period: 0.02        # 50Hz para navegación suave
     map_start_pose: [0.0, 0.0, 0.0]      # Posición inicial

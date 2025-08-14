@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, ExecuteProcess, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, ExecuteProcess, TimerAction, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -46,16 +46,15 @@ def generate_launch_description():
         description='Full path to world file to load'
     )
 
-    # Configurar la variable de entorno GAZEBO_MODEL_PATH
-    # gazebo_model_path = PathJoinSubstitution([tutorial_dir, 'models'])
-
-    # Configurar variables de entorno para Gazebo
-    gazebo_env = ExecuteProcess(
-        cmd=[
-            'bash', '-c',
-            f'export GAZEBO_MODEL_PATH=$GAZEBO_MODEL_PATH:{PathJoinSubstitution([tutorial_dir, "models"])}'
-        ],
-        output='screen'
+    # Variables de entorno para Gazebo
+    set_gazebo_model_path = SetEnvironmentVariable(
+        'GAZEBO_MODEL_PATH',
+        PathJoinSubstitution([tutorial_dir, 'models'])
+    )
+    
+    set_turtlebot3_model = SetEnvironmentVariable(
+        'TURTLEBOT3_MODEL',
+        'waffle'
     )
 
     # Parámetros reescritos
@@ -65,47 +64,55 @@ def generate_launch_description():
         convert_types=True
     )
 
-    # Lanzar Gazebo con el mundo del salón
+    # 1. Lanzar Gazebo
     gazebo_launch = ExecuteProcess(
-        cmd=['gazebo', '--verbose', '-s', 'libgazebo_ros_init.so', 
-        '-s', 'libgazebo_ros_factory.so', LaunchConfiguration('world_file')],
-
-        output='screen',
-        additional_env={
-            'GAZEBO_MODEL_PATH': PathJoinSubstitution([tutorial_dir, 'models'])
-        }
+        cmd=[
+            'gazebo', 
+            '--verbose', 
+            '-s', 'libgazebo_ros_init.so',
+            '-s', 'libgazebo_ros_factory.so',
+            world_file
+        ],
+        output='screen'
     )
 
-    # Robot State Publisher
-    robot_state_publisher_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            PathJoinSubstitution([turtlebot3_gazebo_dir, 'launch', 'robot_state_publisher.launch.py'])
-        ]),
-        launch_arguments={'use_sim_time': use_sim_time}.items()
-    )
-
-    # Spawn del robot en posición central del salón
-    spawn_turtlebot_cmd = TimerAction(
+    # 2. Robot State Publisher - DELAY 3s
+    robot_state_publisher_cmd = TimerAction(
         period=3.0,
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource([
+                    PathJoinSubstitution([turtlebot3_gazebo_dir, 'launch', 'robot_state_publisher.launch.py'])
+                ]),
+                launch_arguments={'use_sim_time': use_sim_time}.items()
+            )
+        ]
+    )
+
+    # 3. Spawn del robot - DELAY 6s
+    spawn_turtlebot_cmd = TimerAction(
+        period=6.0,
         actions=[
             Node(
                 package='gazebo_ros',
                 executable='spawn_entity.py',
-                arguments=['-entity', 'turtlebot3_waffle',
-                           '-file', PathJoinSubstitution([turtlebot3_gazebo_dir, 'models', 
-                                                         'turtlebot3_waffle', 'model.sdf']),
-                           '-x', '0.0',  # Ajusta según el centro de tu salón
-                           '-y', '0.0',
-                           '-z', '0.01',
-                           '-Y', '0.0'],
+                arguments=[
+                    '-entity', 'turtlebot3_waffle',
+                    '-file', PathJoinSubstitution([turtlebot3_gazebo_dir, 'models', 
+                                                 'turtlebot3_waffle', 'model.sdf']),
+                    '-x', '0.0',
+                    '-y', '0.0', 
+                    '-z', '0.01',
+                    '-Y', '0.0'
+                ],
                 output='screen'
             )
         ]
     )
 
-    # SLAM
+    # 4. SLAM - DELAY 9s
     slam_launch = TimerAction(
-        period=6.0,
+        period=9.0,
         actions=[
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource([
@@ -119,9 +126,26 @@ def generate_launch_description():
         ]
     )
 
-    # Navigation2
+    # 5. RViz - DELAY 12s
+    rviz_config_file = PathJoinSubstitution([tutorial_dir, 'rviz', 'salon_explore.rviz'])
+    
+    rviz_cmd = TimerAction(
+        period=12.0,
+        actions=[
+            Node(
+                package='rviz2',
+                executable='rviz2',
+                name='rviz2',
+                arguments=['-d', rviz_config_file],
+                parameters=[{'use_sim_time': use_sim_time}],
+                output='screen'
+            )
+        ]
+    )
+
+    # 6. Navigation2 - DELAY 15s
     nav2_launch = TimerAction(
-        period=10.0,
+        period=15.0,
         actions=[
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource([
@@ -135,9 +159,23 @@ def generate_launch_description():
         ]
     )
 
-    # Explore Lite
+    # 7. Rotación inicial para mapeo - DELAY 18s
+    initial_rotation = TimerAction(
+        period=18.0,
+        actions=[
+            Node(
+                package='tutorial_pkg',
+                executable='initial_mapper.py',  # ✅ Corregido: agregado .py
+                name='initial_mapper',
+                parameters=[{'use_sim_time': use_sim_time}],
+                output='screen'
+            )
+        ]
+    )
+
+    # 8. Explore Lite - DELAY 25s (después del mapeo inicial)
     explore_launch = TimerAction(
-        period=15.0,
+        period=25.0,
         actions=[
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource([
@@ -149,31 +187,14 @@ def generate_launch_description():
             )
         ]
     )
-
-    # RViz
-    rviz_config_file = PathJoinSubstitution([tutorial_dir, 'rviz', 'salon_explore.rviz'])
     
-    rviz_cmd = TimerAction(
-        period=8.0,
-        actions=[
-            Node(
-                package='rviz2',
-                executable='rviz2',
-                name='rviz2',
-                arguments=['-d', rviz_config_file],
-                parameters=[{'use_sim_time': use_sim_time}],
-                output='screen'
-            )
-        ]
-    )
-    
-    # 8. Monitor de exploración - DELAY 20s
+    # 9. Monitor de exploración - DELAY 30s
     exploration_monitor = TimerAction(
-        period=20.0,
+        period=30.0,
         actions=[
             Node(
                 package='tutorial_pkg',
-                executable='exploration_monitor',
+                executable='exploration_monitor.py',  # ✅ Corregido: agregado .py
                 name='exploration_monitor',
                 parameters=[{'use_sim_time': use_sim_time}],
                 output='screen'
@@ -182,17 +203,24 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        # Variables de entorno
+        set_gazebo_model_path,
+        set_turtlebot3_model,
+        
+        # Argumentos
         declare_use_sim_time_cmd,
         declare_params_file_cmd,
         declare_slam_params_file_cmd,
         declare_world_file_cmd,
-        gazebo_env,
-        gazebo_launch,
-        robot_state_publisher_cmd,
-        spawn_turtlebot_cmd,
-        slam_launch,
-        nav2_launch,
-        explore_launch,
-        rviz_cmd,
-        exploration_monitor,
+        
+        # Secuencia de lanzamiento optimizada
+        gazebo_launch,                    # 0s
+        robot_state_publisher_cmd,        # 3s
+        spawn_turtlebot_cmd,             # 6s
+        slam_launch,                     # 9s
+        rviz_cmd,                        # 12s
+        nav2_launch,                     # 15s
+        initial_rotation,                # 18s - Mapeo inicial
+        explore_launch,                  # 25s - Exploración automática
+        exploration_monitor,             # 30s - Monitor
     ])
