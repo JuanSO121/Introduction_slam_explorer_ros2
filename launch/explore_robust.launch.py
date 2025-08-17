@@ -1,7 +1,15 @@
+#!/usr/bin/env python3
+
 # launch/explore_robust.launch.py
-# este es es que intento hacer que cargue el salon
+# Archivo corregido - Exploración robusta con carga optimizada
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, ExecuteProcess, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument, 
+    IncludeLaunchDescription, 
+    TimerAction,
+    GroupAction
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -11,111 +19,132 @@ import os
 
 
 def generate_launch_description():
-    # Directorios de paquetes
+    # =================================================================
+    # CONFIGURACIÓN DE PAQUETES
+    # =================================================================
     tutorial_dir = FindPackageShare('tutorial_pkg')
     nav2_bringup_dir = FindPackageShare('nav2_bringup')
     slam_toolbox_dir = FindPackageShare('slam_toolbox')
-    explore_lite_dir = FindPackageShare('explore_lite')
-    turtlebot3_gazebo_dir = FindPackageShare('turtlebot3_gazebo')
-
+    
     # Variables de configuración
     use_sim_time = LaunchConfiguration('use_sim_time')
     params_file = LaunchConfiguration('params_file')
     slam_params_file = LaunchConfiguration('slam_params_file')
+    rviz_config = LaunchConfiguration('rviz_config')
     world_file = LaunchConfiguration('world_file')
-
-    # Argumentos de lanzamiento
+    x_pose = LaunchConfiguration('x_pose')
+    y_pose = LaunchConfiguration('y_pose')
+    
+    # =================================================================
+    # ARGUMENTOS DE LANZAMIENTO
+    # =================================================================
     declare_use_sim_time_cmd = DeclareLaunchArgument(
         'use_sim_time',
         default_value='true',
         description='Use simulation (Gazebo) clock if true'
     )
-
+    
     declare_params_file_cmd = DeclareLaunchArgument(
         'params_file',
-        default_value=PathJoinSubstitution([tutorial_dir, 'config', 'explore_optimized.yaml']),
+        default_value=PathJoinSubstitution([tutorial_dir, 'config', 'explore_robust.yaml']),
         description='Full path to the ROS2 parameters file to use'
     )
-
+    
     declare_slam_params_file_cmd = DeclareLaunchArgument(
         'slam_params_file',
-        default_value=PathJoinSubstitution([tutorial_dir, 'config', 'slam_optimized.yaml']),
+        default_value=PathJoinSubstitution([tutorial_dir, 'config', 'slam_salon.yaml']),
         description='Full path to the ROS2 parameters file for SLAM'
     )
-
+    
+    declare_rviz_config_cmd = DeclareLaunchArgument(
+        'rviz_config',
+        default_value=PathJoinSubstitution([tutorial_dir, 'rviz', 'salon_explore.rviz']),
+        description='Full path to the RVIZ config file'
+    )
+    
     declare_world_file_cmd = DeclareLaunchArgument(
         'world_file',
         default_value=PathJoinSubstitution([tutorial_dir, 'worlds', 'salon_world.world']),
         description='Full path to the Gazebo world file'
     )
-
-    # Reescribir parámetros
+    
+    declare_x_position_cmd = DeclareLaunchArgument(
+        'x_pose',
+        default_value='0.0',
+        description='X position for robot spawn'
+    )
+    
+    declare_y_position_cmd = DeclareLaunchArgument(
+        'y_pose',
+        default_value='0.0',
+        description='Y position for robot spawn'
+    )
+    
+    # =================================================================
+    # CONFIGURACIÓN DINÁMICA DE PARÁMETROS
+    # =================================================================
     configured_params = RewrittenYaml(
         source_file=params_file,
         param_rewrites={'use_sim_time': use_sim_time},
         convert_types=True
     )
-
+    
+    configured_slam_params = RewrittenYaml(
+        source_file=slam_params_file,
+        param_rewrites={'use_sim_time': use_sim_time},
+        convert_types=True
+    )
+    
     # =================================================================
-    # GAZEBO CON MUNDO PERSONALIZADO
+    # GAZEBO + ROBOT (USANDO EL LAUNCH CORREGIDO)
     # =================================================================
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
-            PathJoinSubstitution([turtlebot3_gazebo_dir, 'launch', 'empty_world.launch.py'])
+            PathJoinSubstitution([tutorial_dir, 'launch', 'salon_gazebo.launch.py'])
         ]),
         launch_arguments={
-            'world': world_file,
-            'use_sim_time': use_sim_time
+            'use_sim_time': use_sim_time,
+            'world_file': world_file,
+            'x_pose': x_pose,
+            'y_pose': y_pose,
         }.items()
     )
-
+    
     # =================================================================
-    # ROBOT SPAWNER CON DELAY
-    # =================================================================
-    robot_spawner = TimerAction(
-        period=3.0,
-        actions=[
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource([
-                    PathJoinSubstitution([turtlebot3_gazebo_dir, 'launch', 'spawn_turtlebot3.launch.py']) #no se si es un archivo que tiene el proyecto porque no lo veo por ninguna parte
-                ]),
-                launch_arguments={
-                    'x_pose': '0.0',
-                    'y_pose': '0.0',
-                    'z_pose': '0.01',
-                    'use_sim_time': use_sim_time
-                }.items()
-            )
-        ]
-    )
-
-    # =================================================================
-    # SLAM TOOLBOX CON CONFIGURACIÓN OPTIMIZADA
+    # SLAM TOOLBOX OPTIMIZADO
     # =================================================================
     slam_launch = TimerAction(
-        period=5.0,
+        period=5.0,  # Esperar a que el robot esté spawneado
         actions=[
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource([
-                    PathJoinSubstitution([slam_toolbox_dir, 'launch', 'online_async_launch.py']) #no se si es un archivo que tiene el proyecto porque no lo veo por ninguna parte
+                    os.path.join(
+                        get_package_share_directory('slam_toolbox'),
+                        'launch',
+                        'online_async_launch.py'
+                    )
                 ]),
                 launch_arguments={
                     'use_sim_time': use_sim_time,
-                    'slam_params_file': slam_params_file
+                    'slam_params_file': configured_slam_params
                 }.items()
             )
         ]
     )
-
+    
     # =================================================================
-    # NAVIGATION2 CON PARÁMETROS OPTIMIZADOS
+    # NAVIGATION2 STACK
     # =================================================================
     nav2_launch = TimerAction(
         period=8.0,
         actions=[
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource([
-                    PathJoinSubstitution([nav2_bringup_dir, 'launch', 'navigation_launch.py'])
+                    os.path.join(
+                        get_package_share_directory('nav2_bringup'),
+                        'launch',
+                        'navigation_launch.py'
+                    )
                 ]),
                 launch_arguments={
                     'use_sim_time': use_sim_time,
@@ -124,106 +153,135 @@ def generate_launch_description():
             )
         ]
     )
-
-    # =================================================================
-    # VISUALIZADOR DE EXPLORACIÓN
-    # =================================================================
-    exploration_visualizer = TimerAction(
-        period=11.0,
-        actions=[
-            Node(
-                package='tutorial_pkg',
-                executable='exploration_visualizer.py',
-                name='exploration_visualizer',
-                output='screen',
-                parameters=[{'use_sim_time': use_sim_time}]
-            )
-        ]
-    )
-
-    # =================================================================
-    # MONITOR DE EXPLORACIÓN (NODO PERSONALIZADO)
-    # =================================================================
-    exploration_monitor = TimerAction(
-        period=10.0,
-        actions=[
-            Node(
-                package='tutorial_pkg',
-                executable='exploration_monitor.py',
-                name='exploration_monitor',
-                output='screen',
-                parameters=[{'use_sim_time': use_sim_time}]
-            )
-        ]
-    )
-
-    # =================================================================
-    # EXPLORE LITE CON DELAY
-    # =================================================================
-    explore_launch = TimerAction(
-        period=12.0,
-        actions=[
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource([
-                    PathJoinSubstitution([explore_lite_dir, 'launch', 'explore.launch.py'])
-                ]),
-                launch_arguments={
-                    'use_sim_time': use_sim_time
-                }.items()
-            )
-        ]
-    )
-
-    # =================================================================
-    # RVIZ OPTIMIZADO PARA EXPLORACIÓN
-    # =================================================================
-    rviz_config_file = PathJoinSubstitution([tutorial_dir, 'rviz', 'explore.rviz'])
     
-    rviz_cmd = TimerAction(
+    # =================================================================
+    # RVIZ PARA VISUALIZACIÓN
+    # =================================================================
+    rviz_launch = TimerAction(
         period=6.0,
         actions=[
             Node(
                 package='rviz2',
                 executable='rviz2',
                 name='rviz2',
-                arguments=['-d', rviz_config_file],
+                arguments=['-d', rviz_config],
                 parameters=[{'use_sim_time': use_sim_time}],
                 output='screen'
             )
         ]
     )
-
+    
     # =================================================================
-    # NODO PARA REINICIAR EXPLORACIÓN SI SE DETIENE
+    # EXPLORE_LITE PARA EXPLORACIÓN AUTÓNOMA
     # =================================================================
-    exploration_restarter = TimerAction(
+    explore_launch = TimerAction(
+        period=12.0,
+        actions=[
+            Node(
+                package='explore_lite',
+                executable='explore',
+                name='explore_node',
+                output='screen',
+                parameters=[
+                    configured_params,
+                    {'use_sim_time': use_sim_time}
+                ],
+                remappings=[
+                    ('/tf', 'tf'),
+                    ('/tf_static', 'tf_static'),
+                ]
+            )
+        ]
+    )
+    
+    # =================================================================
+    # NODOS DE MONITOREO Y DIAGNÓSTICO (OPCIONALES)
+    # =================================================================
+    exploration_monitor = TimerAction(
         period=15.0,
         actions=[
             Node(
                 package='tutorial_pkg',
-                executable='exploration_restarter.py',
-                name='exploration_restarter',
+                executable='exploration_monitor.py',
+                name='exploration_monitor',
                 output='screen',
-                parameters=[{'use_sim_time': use_sim_time}]
+                parameters=[{'use_sim_time': use_sim_time}],
+                condition=lambda context: os.path.exists(
+                    os.path.join(
+                        get_package_share_directory('tutorial_pkg'),
+                        'scripts',
+                        'exploration_monitor.py'
+                    )
+                )
             )
         ]
     )
-
+    
+    # =================================================================
+    # HELPER NODES (CONDICIONALES)
+    # =================================================================
+    helper_nodes = GroupAction([
+        # Limpiador de costmap (si existe)
+        Node(
+            package='tutorial_pkg',
+            executable='costmap_cleaner.py',
+            name='costmap_cleaner',
+            output='screen',
+            parameters=[{'use_sim_time': use_sim_time}]
+        ) if os.path.exists(
+            os.path.join(
+                get_package_share_directory('tutorial_pkg'),
+                'scripts',
+                'costmap_cleaner.py'
+            )
+        ) else Node(package='', executable=''),
+        
+        # Visualizador de exploración (si existe)
+        Node(
+            package='tutorial_pkg',
+            executable='exploration_visualizer.py',
+            name='exploration_visualizer',
+            output='screen',
+            parameters=[{'use_sim_time': use_sim_time}]
+        ) if os.path.exists(
+            os.path.join(
+                get_package_share_directory('tutorial_pkg'),
+                'scripts',
+                'exploration_visualizer.py'
+            )
+        ) else Node(package='', executable='')
+    ])
+    
+    helper_launch = TimerAction(
+        period=18.0,
+        actions=[helper_nodes]
+    )
+    
     return LaunchDescription([
-        # Argumentos
+        # Argumentos de lanzamiento
         declare_use_sim_time_cmd,
         declare_params_file_cmd,
         declare_slam_params_file_cmd,
+        declare_rviz_config_cmd,
         declare_world_file_cmd,
+        declare_x_position_cmd,
+        declare_y_position_cmd,
         
-        # Lanzar en secuencia
-        gazebo_launch,          # t=0: Gazebo + mundo
-        robot_spawner,          # t=3: Spawn robot
-        slam_launch,            # t=5: SLAM optimizado
-        rviz_cmd,              # t=6: RViz
-        nav2_launch,           # t=8: Navigation optimizada
-        exploration_monitor,    # t=10: Monitor de exploración
-        exploration_visualizer, # t=11: Visualizador de estado
-        explore_launch,        # t=12: Exploración
-        exploration_restarter,  # t=15: Reiniciador automático
+        # Lanzamiento secuencial optimizado
+        gazebo_launch,        # t=0: Gazebo + Robot (usando salon_gazebo.launch.py)
+        slam_launch,          # t=5: SLAM Toolbox
+        rviz_launch,          # t=6: Visualización
+        nav2_launch,          # t=8: Navigation Stack
+        explore_launch,       # t=12: Exploración autónoma
+        exploration_monitor,  # t=15: Monitor (si existe)
+        helper_launch,        # t=18: Nodos auxiliares (si existen)
     ])
+
+
+def get_package_share_directory(package_name):
+    """Helper function para obtener directorio del paquete"""
+    try:
+        from ament_index_python.packages import get_package_share_directory as get_dir
+        return get_dir(package_name)
+    except Exception:
+        return f"/opt/ros/humble/share/{package_name}"

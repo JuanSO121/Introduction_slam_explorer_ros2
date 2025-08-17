@@ -23,6 +23,9 @@ install(PROGRAMS
   tutorial_pkg/exploration_monitor.py
   tutorial_pkg/exploration_restarter.py
   tutorial_pkg/exploration_visualizer.py
+  tutorial_pkg/costmap_cleaner.py
+  tutorial_pkg/enhanced_exploration_monitor.py
+  tutorial_pkg/obstacle_diagnostics.py
   # Añade aquí otros nodos .py que quieras ejecutar directamente
   DESTINATION lib/${PROJECT_NAME}
 )

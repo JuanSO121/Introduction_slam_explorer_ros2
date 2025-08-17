@@ -81,6 +81,8 @@ setup(
             'exploration_visualizer = tutorial_pkg.exploration_visualizer:main',
             'initial_mapper = tutorial_pkg.initial_mapper:main',
             'costmap_cleaner = tutorial_pkg.costmap_cleaner:main',
+            'obstacle_diagnostics = tutorial_pkg.obstacle_diagnostics:main',
+            'enhanced_exploration_monitor = tutorial_pkg.enhanced_exploration_monitor:main',
         ],
     },
 )
