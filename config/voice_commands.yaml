@@ -1,0 +1,64 @@
+# config/voice_commands.yaml
+# Configuración para el sistema de comandos de voz
+
+voice_command_handler:
+  ros__parameters:
+    # Configuración de movimiento
+    movement:
+      linear_speed: 0.3      # Velocidad lineal por defecto (m/s)
+      angular_speed: 0.8     # Velocidad angular por defecto (rad/s) 
+      default_duration: 2.0  # Duración por defecto de movimientos (s)
+      emergency_stop_enabled: true
+      
+    # Configuración de exploración
+    exploration:
+      auto_start: false
+      timeout_seconds: 300  # 5 minutos timeout
+      pause_on_voice_command: true
+      resume_after_movement: false
+      
+    # Configuración de navegación
+    navigation:
+      goal_tolerance: 0.25   # Tolerancia para llegar al objetivo (m)
+      max_goal_distance: 10.0 # Distancia máxima para objetivos (m)
+      use_global_planner: true
+      clear_costmaps_on_failure: true
+      
+    # Configuración de respuestas
+    feedback:
+      publish_status_updates: true
+      verbose_responses: true
+      language: "es"  # "es" para español, "en" para inglés
+      
+    # Configuración de seguridad
+    safety:
+      emergency_stop_timeout: 0.5  # Tiempo máximo para parada (s)
+      max_linear_velocity: 0.8     # Velocidad máxima permitida (m/s)
+      max_angular_velocity: 2.0    # Velocidad angular máxima (rad/s)
+      collision_avoidance: true
+      
+    # Tópicos personalizados
+    topics:
+      voice_commands: "/voice_commands"
+      structured_commands: "/structured_voice_commands"
+      cmd_vel: "/cmd_vel"
+      goal_pose: "/goal_pose"
+      exploration_control: "/exploration_control"
+      voice_feedback: "/voice_feedback"
+      
+    # Configuración de historial
+    history:
+      max_entries: 50
+      save_to_file: false
+      log_all_commands: true
+
+# Configuración del ROSBridge
+rosbridge_server:
+  ros__parameters:
+    port: 9090
+    address: "127.0.0.1"
+    retry_startup_delay: 5
+    fragment_timeout: 600
+    delay_between_messages: 0
+    max_message_size: null
+    unregister_timeout: 10.0

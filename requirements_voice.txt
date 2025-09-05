@@ -1,0 +1,32 @@
+# requirements_voice.txt
+# Dependencias adicionales para control por voz e IA
+# Ubicación: tutorial_pkg/requirements_voice.txt
+
+# IA y procesamiento de lenguaje natural
+google-generativeai>=0.8.0
+google-ai-generativelanguage>=0.6.0
+
+# Reconocimiento de voz
+SpeechRecognition>=3.10.0
+pyaudio>=0.2.11
+pocketsphinx>=0.1.15
+
+# Text-to-Speech
+pyttsx3>=2.90
+gTTS>=2.3.0
+
+# Procesamiento de audio
+sounddevice>=0.4.6
+wave>=0.0.2
+audioop-lts>=0.2.1
+
+# Utilidades adicionales
+numpy>=1.21.0
+scipy>=1.7.0
+opencv-python>=4.5.0
+requests>=2.28.0
+python-dotenv>=0.19.0
+
+# Para mejor calidad de audio
+portaudio19-dev  # En sistemas Ubuntu/Debian
+pulseaudio  # Para manejo de audio en Linux
