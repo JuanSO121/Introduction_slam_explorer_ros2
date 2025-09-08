@@ -117,7 +117,6 @@ setup(
             # Nodos con integración IA
             'ai_response_node = tutorial_pkg.ai_response_node:main',
             'ai_voice_commander = tutorial_pkg.ai_voice_commander:main',
-            # 'voice_command_handler = tutorial_pkg.voice_command_handler:main',
         ],
     },
 )

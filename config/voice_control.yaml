@@ -1,67 +1,242 @@
-# Configuración del sistema de control por voz IA para tutorial_pkg
+# Archivo de configuración para sistema de control por voz integrado
 # Ubicación: ~/ros2_ws/src/tutorial_pkg/config/voice_control.yaml
-# Formato compatible con ROS2 - Versión corregida
 
-# Configuración para ai_voice_commander
+# === CONFIGURACIÓN DEL AI VOICE COMMANDER ===
 ai_voice_commander:
   ros__parameters:
-    # === CONFIGURACIÓN DE VELOCIDADES SEGURAS ===
-    linear_speed_default: 0.2
-    linear_speed_min: 0.05
-    linear_speed_max: 0.5
-    angular_speed_default: 0.3
-    angular_speed_min: 0.1
-    angular_speed_max: 0.8
-    
-    # === CONFIGURACIÓN DE SEGURIDAD ===
-    auto_stop_timeout: 5.0
-    stuck_detection_timeout: 30.0
-    emergency_stop_enabled: true
-    max_continuous_movement: 10.0
-    
-    # === CONFIGURACIÓN DE IA ===
+    # Configuración básica
+    use_sim_time: true
     enable_ai_responses: true
-    conversation_history_limit: 10
-    command_classification: true
-    response_timeout: 10.0
-    
-    # === CONFIGURACIÓN DE AUDIO ===
-    sample_rate: 16000
-    max_duration: 30
-    language: "es"
-    
-    # === CONFIGURACIÓN DE LOGGING ===
-    log_level: "INFO"
     log_voice_commands: true
-    log_ai_responses: true
-    log_robot_state: false
+    emergency_stop_enabled: true
     
-    # === CONFIGURACIÓN DE EXPLORACIÓN ===
-    auto_start_delay: 2.0
-    progress_check_interval: 10.0
-    completion_threshold: 80.0
-    stuck_recovery_attempts: 3
+    # Parámetros de velocidad
+    linear_speed_default: 0.22
+    angular_speed_default: 0.35
+    max_linear_speed: 0.5
+    max_angular_speed: 0.8
+    min_linear_speed: 0.05
+    min_angular_speed: 0.1
+    
+    # Timeouts de seguridad
+    auto_stop_timeout: 5.0
+    command_timeout: 30.0
+    
+    # Mapeo de comandos específicos
+    command_patterns:
+      forward: ["adelante", "avanzar", "forward", "move forward", "ve adelante"]
+      backward: ["atras", "atrás", "retroceder", "backward", "go back"]
+      left: ["izquierda", "left", "girar izquierda", "turn left", "gira izquierda"]
+      right: ["derecha", "right", "girar derecha", "turn right", "gira derecha"]
+      stop: ["parar", "stop", "detener", "halt", "alto", "para"]
+      explore: ["explorar", "mapear", "iniciar exploracion", "start exploration", "explora"]
+      pause: ["pausar", "pause", "detener exploracion", "pause exploration"]
+      resume: ["continuar", "resume", "reanudar exploracion", "resume exploration"]
+      finish: ["terminar", "finish", "finalizar exploracion", "finish exploration"]
+      status: ["estado", "status", "información", "info", "como estas"]
+      emergency: ["emergencia", "emergency", "ayuda", "help", "socorro"]
+    
+    # Configuración de respuestas
+    response_language: "spanish"
+    response_max_length: 50
+    
+    # Tópicos ROS
+    topics:
+      cmd_vel: "/cmd_vel"
+      voice_commands: "/voice_commands"
+      voice_feedback: "/voice_feedback"
+      ai_context: "/ai_context"
+      exploration_control: "/exploration_control"
 
-# Configuración para ai_response_node  
+# === CONFIGURACIÓN DEL AI RESPONSE NODE ===
 ai_response_node:
   ros__parameters:
-    # === CONFIGURACIÓN DE MONITOREO ===
+    # Configuración básica
+    use_sim_time: true
     status_publish_rate: 2.0
     heartbeat_interval: 30.0
-    enable_audio_streaming: true
     
-    # === CONFIGURACIÓN DE IA ===
-    enable_ai_responses: true
-    conversation_history_limit: 10
-    response_timeout: 10.0
+    # Parámetros de monitoreo
+    max_idle_time: 60.0
+    stuck_detection_timeout: 30.0
+    map_growth_check_interval: 45.0
     
-    # === CONFIGURACIÓN DE LOGGING ===
+    # Configuración de logging
     log_level: "INFO"
-    log_voice_commands: true
-    log_ai_responses: true
-    log_robot_state: false
+    save_command_history: true
+    max_command_history: 100
+    
+    # Estadísticas
+    stats_publish_rate: 10.0
+    enable_performance_monitoring: true
+    
+    # Información del robot
+    robot_info:
+      name: "TurtleBot3 Explorer"
+      package: "tutorial_pkg"
+      version: "1.1.0"
+      capabilities:
+        - "autonomous_exploration"
+        - "slam_mapping" 
+        - "voice_control"
+        - "ai_integration"
+        - "real_time_feedback"
+    
+    # Tópicos ROS
+    topics:
+      voice_feedback: "/voice_feedback"
+      cmd_vel: "/cmd_vel"
+      map: "/map"
+      ai_status: "/ai_status"
+      robot_state: "/robot_state"
+      exploration_control: "/exploration_control"
+      odom: "/odom"
 
-# Configuración global (usar /* para aplicar a todos los nodos)
-/**:
+# === CONFIGURACIÓN DEL EXPLORATION MONITOR ===
+exploration_monitor:
   ros__parameters:
+    # Configuración básica
     use_sim_time: true
+    
+    # Parámetros de detección de problemas
+    map_growth_timeout: 45.0
+    position_stuck_timeout: 30.0
+    velocity_stuck_timeout: 20.0
+    
+    # Parámetros de exploración
+    min_frontier_distance: 1.2
+    max_exploration_distance: 8.0
+    min_frontier_size: 0.5
+    frontier_history_size: 50
+    
+    # Parámetros de recuperación
+    enable_auto_recovery: true
+    recovery_spin_duration: 4.0
+    recovery_spin_velocity: 0.5
+    max_recovery_attempts: 3
+    recovery_cooldown: 60.0
+    
+    # Costmap clearing
+    clear_costmaps_on_stuck: true
+    costmap_clear_radius: 2.0
+    
+    # Exploración sistemática
+    enable_systematic_exploration: true
+    systematic_patterns:
+      - "spiral"
+      - "grid" 
+      - "radial"
+    pattern_switch_interval: 120.0  # segundos
+    
+    # Análisis de cobertura
+    coverage_analysis_interval: 30.0
+    completion_threshold: 0.85
+    high_coverage_threshold: 0.95
+    
+    # Tópicos y servicios
+    topics:
+      map: "/map"
+      odom: "/odom"
+      scan: "/scan"
+      cmd_vel: "/cmd_vel"
+      goal_pose: "/goal_pose"
+    
+    services:
+      clear_local_costmap: "/local_costmap/clear_entirely_local_costmap"
+      clear_global_costmap: "/global_costmap/clear_entirely_global_costmap"
+
+# === CONFIGURACIÓN GENERAL DEL SISTEMA ===
+system:
+  ros__parameters:
+    # Frame de referencia
+    global_frame: "map"
+    robot_base_frame: "base_footprint"
+    odom_frame: "odom"
+    
+    # Configuración de tiempo
+    use_sim_time: true
+    time_tolerance: 1.0
+    
+    # Configuración de archivos
+    config_directory: "config"
+    maps_directory: "maps"
+    logs_directory: "logs"
+    
+    # Integración con aplicaciones externas
+    flask_server:
+      enabled: false  # Se habilita por argumento de launch
+      host: "0.0.0.0"
+      port: 8000
+      cors_origins: ["*"]
+      max_file_size: 16777216  # 16MB
+    
+    # Configuración de servicios de IA
+    ai_services:
+      whisper:
+        model: "openai/whisper-small"
+        language: "spanish"
+        device: "cpu"
+      
+      gemini:
+        model: "gemini-2.0-flash"
+        max_tokens: 150
+        temperature: 0.7
+        language: "spanish"
+    
+    # Configuración de red y conectividad
+    network:
+      enable_discovery: true
+      multicast_group: "224.0.0.1"
+      discovery_port: 11511
+      heartbeat_interval: 30.0
+    
+    # Configuración de diagnósticos
+    diagnostics:
+      enabled: true
+      publish_rate: 1.0
+      warn_on_errors: true
+      error_threshold: 10
+    
+    # Configuración de visualización
+    visualization:
+      markers_namespace: "tutorial_pkg"
+      marker_lifetime: 30.0
+      text_height: 0.1
+      frontier_marker_scale: 0.5
+      path_line_width: 0.02
+
+# === CONFIGURACIÓN DE QUALITY OF SERVICE (QoS) ===
+qos_profiles:
+  # Para comandos de voz críticos
+  voice_commands:
+    history: keep_last
+    depth: 10
+    reliability: reliable
+    durability: volatile
+    deadline:
+      sec: 1
+      nsec: 0
+    lifespan:
+      sec: 5
+      nsec: 0
+  
+  # Para datos de sensores
+  sensor_data:
+    history: keep_last
+    depth: 5
+    reliability: best_effort
+    durability: volatile
+  
+  # Para estado del sistema
+  system_status:
+    history: keep_last
+    depth: 1
+    reliability: reliable
+    durability: transient_local
+    
+  # Para mapas y navegación
+  navigation_data:
+    history: keep_last
+    depth: 1
+    reliability: reliable
+    durability: volatile
