@@ -5,7 +5,6 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# Dependencias
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rclpy REQUIRED)
@@ -15,37 +14,27 @@ find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 
-# Instalar módulo Python (carpeta tutorial_pkg/)
+# Instalar módulo Python
 ament_python_install_package(${PROJECT_NAME})
 
-# Instalar scripts Python opcionales (si no van en console_scripts)
-install(PROGRAMS
-  tutorial_pkg/exploration_monitor.py
-  tutorial_pkg/exploration_restarter.py
-  tutorial_pkg/exploration_visualizer.py
-  tutorial_pkg/costmap_cleaner.py
-  tutorial_pkg/enhanced_exploration_monitor.py
-  tutorial_pkg/obstacle_diagnostics.py
-  # Añade aquí otros nodos .py que quieras ejecutar directamente
-  DESTINATION lib/${PROJECT_NAME}
-)
+# NO instalar los archivos Python manualmente aquí - setup.py lo maneja
+# ELIMINAR estas líneas que tienes actualmente:
+# install(PROGRAMS tutorial_pkg/ai_voice_commander.py ...)
 
-# Instalar carpetas de datos y configuración
+# Solo instalar directorios de datos
 install(DIRECTORY
-  config
   launch
+  config
   maps
   models
   rviz
   worlds
   scripts
-  DESTINATION share/${PROJECT_NAME}
+  DESTINATION share/${PROJECT_NAME}/
 )
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
-  set(ament_cmake_copyright_FOUND TRUE)
-  set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 endif()
 

@@ -1,0 +1,44 @@
+# Dependencias Python para sistema de control por voz en tutorial_pkg
+# Ubicación: ~/ros2_ws/src/tutorial_pkg/voice_services/requirements.txt
+
+# === Web Framework ===
+Flask==2.3.3
+Flask-CORS==4.0.0
+Flask-SocketIO==5.3.6
+Werkzeug==2.3.7
+
+# === WebSocket / Tiempo real ===
+python-socketio==5.8.0
+eventlet==0.33.3
+websocket-client==1.6.1
+websockets==11.0.1
+
+# === Procesamiento de audio ===
+pydub==0.25.1
+librosa==0.11.0
+soundfile==0.12.1
+numpy==1.24.3
+scipy==1.11.3
+numba==0.57.1
+
+# === IA / Machine Learning ===
+torch==2.0.1
+torchaudio==2.0.2
+transformers==4.33.2
+accelerate==0.21.0
+scikit-learn==1.3.2
+
+# === API requests (Gemini y otros) ===
+requests==2.31.0
+google-generativeai==0.3.0
+python-dotenv==1.0.0
+
+# === Utilidades ===
+pathlib2==2.3.7
+colorlog==6.7.0
+
+# === ROS2 Python (se instala por separado con ROS2) ===
+# rclpy - incluido con ROS2
+# std_msgs - incluido con ROS2
+# geometry_msgs - incluido con ROS2
+# nav_msgs - incluido con ROS2

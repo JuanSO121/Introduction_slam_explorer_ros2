@@ -2,13 +2,13 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>tutorial_pkg</name>
+  
   <version>0.0.0</version>
   <description>Package para exploración automática con TurtleBot3</description>
   <maintainer email="jjso@todo.todo">jjso</maintainer>
   <license>Apache License 2.0</license>
 
-  <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <buildtool_depend>setuptools</buildtool_depend>
 
   <!-- ROS2 Python dependencies -->
   <depend>rclpy</depend>
@@ -17,7 +17,9 @@
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>nav2_msgs</depend>
-  
+  <depend>tf2_msgs</depend>
+  <depend>rosbridge_server</depend>
+
   <!-- Launch and configuration dependencies -->
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
@@ -33,8 +35,12 @@
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
 
   <export>
-    <build_type>ament_cmake</build_type>
+    <build_type>ament_python</build_type>
   </export>
 </package>

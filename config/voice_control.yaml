@@ -1,0 +1,67 @@
+# Configuración del sistema de control por voz IA para tutorial_pkg
+# Ubicación: ~/ros2_ws/src/tutorial_pkg/config/voice_control.yaml
+# Formato compatible con ROS2 - Versión corregida
+
+# Configuración para ai_voice_commander
+ai_voice_commander:
+  ros__parameters:
+    # === CONFIGURACIÓN DE VELOCIDADES SEGURAS ===
+    linear_speed_default: 0.2
+    linear_speed_min: 0.05
+    linear_speed_max: 0.5
+    angular_speed_default: 0.3
+    angular_speed_min: 0.1
+    angular_speed_max: 0.8
+    
+    # === CONFIGURACIÓN DE SEGURIDAD ===
+    auto_stop_timeout: 5.0
+    stuck_detection_timeout: 30.0
+    emergency_stop_enabled: true
+    max_continuous_movement: 10.0
+    
+    # === CONFIGURACIÓN DE IA ===
+    enable_ai_responses: true
+    conversation_history_limit: 10
+    command_classification: true
+    response_timeout: 10.0
+    
+    # === CONFIGURACIÓN DE AUDIO ===
+    sample_rate: 16000
+    max_duration: 30
+    language: "es"
+    
+    # === CONFIGURACIÓN DE LOGGING ===
+    log_level: "INFO"
+    log_voice_commands: true
+    log_ai_responses: true
+    log_robot_state: false
+    
+    # === CONFIGURACIÓN DE EXPLORACIÓN ===
+    auto_start_delay: 2.0
+    progress_check_interval: 10.0
+    completion_threshold: 80.0
+    stuck_recovery_attempts: 3
+
+# Configuración para ai_response_node  
+ai_response_node:
+  ros__parameters:
+    # === CONFIGURACIÓN DE MONITOREO ===
+    status_publish_rate: 2.0
+    heartbeat_interval: 30.0
+    enable_audio_streaming: true
+    
+    # === CONFIGURACIÓN DE IA ===
+    enable_ai_responses: true
+    conversation_history_limit: 10
+    response_timeout: 10.0
+    
+    # === CONFIGURACIÓN DE LOGGING ===
+    log_level: "INFO"
+    log_voice_commands: true
+    log_ai_responses: true
+    log_robot_state: false
+
+# Configuración global (usar /* para aplicar a todos los nodos)
+/**:
+  ros__parameters:
+    use_sim_time: true
