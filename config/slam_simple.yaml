@@ -126,5 +126,5 @@ slam_toolbox:
     throttle_scans: 1                     # Procesar todos los scans
     
     # Configuración para guardado automático
-    map_file_name: salon_map
+    # map_file_name: salon_map
     map_start_at_dock: true

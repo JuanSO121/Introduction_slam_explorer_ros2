@@ -1,0 +1,53 @@
+# Configuración para Flutter Bridge Node
+# Ubicación: ~/ros2_ws/src/tutorial_pkg/config/flutter_bridge_config.yaml
+
+flutter_bridge_node:
+  ros__parameters:
+    # Configuración del servidor Flask
+    flask_port: 8000
+    flask_host: "0.0.0.0"
+    
+    # Características habilitadas
+    enable_websocket: true
+    enable_voice_processing: true
+    enable_ai_integration: true
+    
+    # Configuración de procesamiento de voz
+    voice_config:
+      whisper_model: "openai/whisper-small"
+      language: "es"
+      max_audio_duration: 30
+      audio_sample_rate: 16000
+    
+    # Configuración de IA
+    ai_config:
+      gemini_api_key: "AIzaSyABBoS19JdslBti21hcRT3tT7ASrc8EWsE"
+      max_response_length: 200
+      context_memory: 5
+    
+    # Configuración de seguridad
+    security_config:
+      max_file_size_mb: 10
+      allowed_audio_formats: ["wav", "mp3", "m4a", "ogg"]
+      rate_limit_requests_per_minute: 30
+    
+    # Configuración específica de tutorial_pkg
+    tutorial_pkg_integration:
+      subscribed_topics:
+        - "/voice_feedback"
+        - "/ai_status" 
+        - "/robot_state"
+        - "/cmd_vel"
+        - "/map"
+        - "/exploration_control"
+      
+      published_topics:
+        - "/voice_commands"
+        - "/exploration_control"
+      
+      valid_exploration_commands:
+        - "start_exploration"
+        - "pause_exploration"
+        - "resume_exploration"
+        - "finish_exploration"
+        - "emergency_stop"

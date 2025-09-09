@@ -67,6 +67,11 @@ def get_data_files():
     if script_files:
         data_files.append((os.path.join('share', package_name, 'scripts'), script_files))
     
+    # Flutter bridge config files - NUEVO
+    flutter_config_files = [f for f in glob('config/flutter_*.yaml') if not should_exclude(f)]
+    if flutter_config_files:
+        data_files.append((os.path.join('share', package_name, 'config'), flutter_config_files))
+    
     # Models (con filtrado mejorado)
     if os.path.exists('models'):
         for root, dirs, files in os.walk('models'):
@@ -85,7 +90,7 @@ def get_data_files():
 
 setup(
     name=package_name,
-    version='2.0.0',
+    version='2.1.0',  # Versión actualizada
     packages=find_packages(exclude=['test']),
     data_files=get_data_files(),
     install_requires=[
@@ -96,12 +101,18 @@ setup(
         'std_msgs',
         'sensor_msgs',
         'nav2_msgs',
-        'visualization_msgs'
+        'visualization_msgs',
+        # Dependencias para Flutter Bridge
+        'flask>=2.0.0',
+        'flask-cors>=4.0.0',
+        'flask-socketio>=5.0.0',
+        'requests>=2.25.0',
+        'werkzeug>=2.0.0'
     ],
     zip_safe=True,
     maintainer='Juan Sanchez',
     maintainer_email='sanchezjuanjo0508@gmail.com',
-    description='Paquete tutorial para exploración con TurtleBot3 e integración IA',
+    description='Paquete tutorial para exploración con TurtleBot3, IA y integración Flutter',
     license='Apache License 2.0',
     tests_require=['pytest'],
     entry_points={
@@ -114,9 +125,13 @@ setup(
             'costmap_cleaner = tutorial_pkg.costmap_cleaner:main',
             'obstacle_diagnostics = tutorial_pkg.obstacle_diagnostics:main',
             'enhanced_exploration_monitor = tutorial_pkg.enhanced_exploration_monitor:main',
-            # Nodos con integración IA
+            
+            # Nodos con integración IA (existentes)
             'ai_response_node = tutorial_pkg.ai_response_node:main',
             'ai_voice_commander = tutorial_pkg.ai_voice_commander:main',
+            
+            # NUEVO: Flutter Bridge Node
+            'flutter_bridge_node = tutorial_pkg.flutter_bridge_node:main',
         ],
     },
 )
