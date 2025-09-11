@@ -1,0 +1,44 @@
+
+# =================================================================
+# ARCHIVO DE CONFIGURACIÓN YAML PARA WHISPER
+# Ubicación: ~/ros2_ws/src/tutorial_pkg/config/whisper_config.yaml
+# =================================================================
+
+# Configuración para Whisper Service integrado con tutorial_pkg
+
+whisper_transcription_service:
+  ros__parameters:
+    # Modelo Whisper
+    whisper_model: "openai/whisper-small"  # tiny, base, small, medium, large
+    
+    # Topics ROS2
+    voice_commands_topic: "/voice_commands"
+    transcription_feedback_topic: "/transcription_feedback"
+    
+    # Configuración de audio
+    sample_rate: 16000
+    max_audio_duration: 30.0  # segundos
+    min_transcription_length: 3  # caracteres mínimos
+    
+    # Performance
+    device: "cpu"  # cpu o cuda
+    torch_dtype: "float32"
+    low_cpu_mem_usage: true
+    
+    # Idioma
+    language: "es"
+    task: "transcribe"
+    
+    # FastAPI
+    host: "0.0.0.0"
+    port: 8000
+    enable_cors: true
+    
+    # Logging
+    log_level: "INFO"
+    log_transcriptions: true
+    log_processing_time: true
+    
+    # Limpieza
+    cleanup_temp_files: true
+    max_temp_file_age: 300  # segundos

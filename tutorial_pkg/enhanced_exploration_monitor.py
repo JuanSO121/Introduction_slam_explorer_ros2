@@ -1,390 +1,471 @@
 #!/usr/bin/env python3
 """
-Monitor de exploración mejorado con limpieza automática de costmaps
-y detección inteligente de áreas no exploradas
+Enhanced Exploration Monitor - VERSIÓN INTEGRADA CON COORDINADOR
+Se comunica con el RobotControlCoordinator para evitar conflictos
+Ubicación: ~/ros2_ws/src/tutorial_pkg/tutorial_pkg/enhanced_exploration_monitor.py
 """
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist, PoseStamped, PoseWithCovarianceStamped
-from nav_msgs.msg import OccupancyGrid, MapMetaData
-from std_msgs.msg import Empty
+from geometry_msgs.msg import Twist, PoseStamped
+from nav_msgs.msg import OccupancyGrid, Odometry
+from std_msgs.msg import String
 from sensor_msgs.msg import LaserScan
-from nav2_msgs.srv import ClearEntireCostmap
 import numpy as np
 import time
 import math
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from sklearn.cluster import DBSCAN
+import json
+from typing import Dict, Any, Optional
 import cv2
 
 
 class EnhancedExplorationMonitor(Node):
     def __init__(self):
-        super().__init__('exploration_monitor')
+        super().__init__('enhanced_exploration_monitor')
         
-        # QoS profiles
-        qos_profile = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10
-        )
+        # =====================================================================
+        # CONFIGURACIÓN
+        # =====================================================================
+        self.declare_parameter('map_growth_timeout', 60.0)
+        self.declare_parameter('position_stuck_timeout', 45.0)
+        self.declare_parameter('min_frontier_distance', 1.0)
+        self.declare_parameter('max_exploration_distance', 8.0)
+        self.declare_parameter('monitoring_enabled', True)
         
-        # Estado del sistema
+        # Estado del monitor
+        self.monitoring_active = self.get_parameter('monitoring_enabled').value
         self.current_map = None
-        self.map_metadata = None
-        self.robot_position = None
-        self.last_exploration_time = time.time()
-        self.last_map_size = 0
-        self.stuck_counter = 0
-        self.unexplored_frontiers = []
-        self.visited_positions = []
+        self.robot_pose = None
+        self.last_scan = None
+        self.last_map_growth = time.time()
+        self.last_position = None
+        self.position_stuck_time = 0
+        self.explored_frontiers = set()
+        self.last_position_time = time.time()
         
-        # Parámetros mejorados
-        self.exploration_timeout = 45.0      # Tiempo sin progreso
-        self.stuck_threshold = 25.0          # Tiempo sin movimiento
-        self.min_frontier_size = 8           # Tamaño mínimo de frontera
-        self.frontier_distance_threshold = 1.5  # Distancia mínima entre fronteras
-        self.costmap_clear_interval = 30.0   # Intervalo limpieza costmaps
-        self.last_costmap_clear = 0
+        # Estado del coordinador - COMUNICACIÓN BIDIRECCIONAL
+        self.coordinator_state = {
+            'exploration_active': False,
+            'manual_override_active': False,
+            'voice_control_active': False,
+            'emergency_active': False,
+            'current_state': 'UNKNOWN'
+        }
         
-        # Subscribers
+        # =====================================================================
+        # PUBLISHERS - Comunicación con coordinador
+        # =====================================================================
+        self.exploration_request_pub = self.create_publisher(
+            String, '/exploration_request', 10)
+        
+        self.monitor_status_pub = self.create_publisher(
+            String, '/monitor_status', 10)
+        
+        # =====================================================================
+        # SUBSCRIBERS - Escuchar coordinador y sensores
+        # =====================================================================
+        # Estado del coordinador
+        self.coordinator_status_sub = self.create_subscription(
+            String, '/coordinator_status', self._coordinator_status_callback, 10)
+        
+        # Sensores
         self.map_sub = self.create_subscription(
-            OccupancyGrid, '/map', self.map_callback, qos_profile
-        )
+            OccupancyGrid, '/map', self._map_callback, 10)
         
-        self.amcl_sub = self.create_subscription(
-            PoseWithCovarianceStamped, '/amcl_pose', 
-            self.robot_pose_callback, qos_profile
-        )
-        
-        self.cmd_vel_sub = self.create_subscription(
-            Twist, '/cmd_vel', self.cmd_vel_callback, qos_profile
-        )
+        self.odom_sub = self.create_subscription(
+            Odometry, '/odom', self._odom_callback, 10)
         
         self.scan_sub = self.create_subscription(
-            LaserScan, '/scan', self.scan_callback, qos_profile
-        )
+            LaserScan, '/scan', self._scan_callback, 10)
         
-        # Publishers
-        self.goal_pub = self.create_publisher(
-            PoseStamped, '/goal_pose', qos_profile
-        )
+        # Monitorear velocidad para detectar conflictos
+        self.cmd_vel_sub = self.create_subscription(
+            Twist, '/cmd_vel', self._cmd_vel_callback, 10)
         
-        self.cmd_vel_pub = self.create_publisher(
-            Twist, '/cmd_vel', qos_profile
-        )
+        # =====================================================================
+        # TIMERS - Monitoreo inteligente
+        # =====================================================================
+        self.monitor_timer = self.create_timer(3.0, self._monitor_exploration)
+        self.status_publish_timer = self.create_timer(5.0, self._publish_monitor_status)
         
-        # Clientes de servicio para limpiar costmaps
-        self.clear_local_costmap = self.create_client(
-            ClearEntireCostmap, '/local_costmap/clear_entirely_local_costmap'
-        )
-        
-        self.clear_global_costmap = self.create_client(
-            ClearEntireCostmap, '/global_costmap/clear_entirely_global_costmap'
-        )
-        
-        # Timers
-        self.monitor_timer = self.create_timer(3.0, self.monitor_exploration)
-        self.frontier_timer = self.create_timer(10.0, self.find_unexplored_areas)
-        self.cleanup_timer = self.create_timer(5.0, self.periodic_cleanup)
-        
-        self.get_logger().info("🚀 Monitor de exploración mejorado iniciado")
+        self.get_logger().info('🔍 Enhanced Exploration Monitor iniciado (integrado con coordinador)')
     
-    def map_callback(self, msg):
-        """Procesa actualizaciones del mapa"""
-        self.current_map = msg
-        self.map_metadata = msg.info
-        
-        # Contar celdas conocidas
-        current_size = sum(1 for cell in msg.data if cell >= 0)
-        
-        if current_size > self.last_map_size + 50:  # Crecimiento significativo
-            self.last_exploration_time = time.time()
-            self.last_map_size = current_size
-            self.get_logger().debug(f"📈 Mapa creciendo: {current_size} celdas")
+    # =========================================================================
+    # CALLBACKS DE ESTADO - Coordinación con sistema central
+    # =========================================================================
     
-    def robot_pose_callback(self, msg):
-        """Actualiza la posición del robot"""
-        self.robot_position = msg.pose.pose.position
-        
-        # Registrar posición visitada
-        if self.robot_position:
-            current_pos = (self.robot_position.x, self.robot_position.y)
-            self.visited_positions.append(current_pos)
+    def _coordinator_status_callback(self, msg: String):
+        """Recibir estado del coordinador - SINCRONIZACIÓN CRÍTICA"""
+        try:
+            status_data = json.loads(msg.data)
             
-            # Mantener solo las últimas 100 posiciones
-            if len(self.visited_positions) > 100:
-                self.visited_positions.pop(0)
+            # Actualizar estado conocido del coordinador
+            old_exploration_state = self.coordinator_state.get('exploration_active', False)
+            
+            self.coordinator_state.update({
+                'exploration_active': 'EXPLORING_AUTO' in status_data.get('state', ''),
+                'manual_override_active': status_data.get('manual_override_active', False),
+                'voice_control_active': status_data.get('voice_control_active', False),
+                'emergency_active': status_data.get('emergency_active', False),
+                'current_state': status_data.get('state', 'UNKNOWN')
+            })
+            
+            # Detectar cambio en estado de exploración
+            new_exploration_state = self.coordinator_state['exploration_active']
+            if old_exploration_state != new_exploration_state:
+                if new_exploration_state:
+                    self.get_logger().info('▶️ Monitor: Exploración activada por coordinador')
+                    self.last_map_growth = time.time()  # Reset timers
+                    self.position_stuck_time = 0
+                else:
+                    self.get_logger().info('⏸️ Monitor: Exploración pausada por coordinador')
+            
+            # Ajustar monitoreo basado en estado
+            self.monitoring_active = (
+                new_exploration_state and 
+                not self.coordinator_state['emergency_active']
+            )
+            
+        except Exception as e:
+            self.get_logger().error(f'Error procesando estado coordinador: {e}')
     
-    def cmd_vel_callback(self, msg):
-        """Monitorea movimiento del robot"""
-        is_moving = abs(msg.linear.x) > 0.05 or abs(msg.angular.z) > 0.1
+    def _map_callback(self, msg: OccupancyGrid):
+        """Procesar actualizaciones del mapa"""
+        old_known_cells = 0
+        if self.current_map is not None:
+            old_known_cells = np.sum(np.array(self.current_map.data) >= 0)
         
-        if is_moving:
-            self.stuck_counter = 0
-        else:
-            self.stuck_counter += 1
+        self.current_map = msg
+        new_known_cells = np.sum(np.array(msg.data) >= 0)
+        
+        # Detectar crecimiento significativo
+        if new_known_cells > old_known_cells + 20:
+            self.last_map_growth = time.time()
+            self.get_logger().debug(f'Mapa creció: {new_known_cells - old_known_cells} celdas')
     
-    def scan_callback(self, msg):
-        """Procesa datos del láser"""
-        # Aquí podrías implementar detección de obstáculos fantasma
-        # comparando con el mapa conocido
-        pass
-    
-    def clear_costmaps(self):
-        """Limpia ambos costmaps para eliminar obstáculos fantasma"""
+    def _odom_callback(self, msg: Odometry):
+        """Monitorear posición para detectar robot atascado"""
+        current_pos = msg.pose.pose.position
         current_time = time.time()
         
-        if current_time - self.last_costmap_clear < self.costmap_clear_interval:
+        if self.last_position is not None:
+            distance = math.sqrt(
+                (current_pos.x - self.last_position.x)**2 + 
+                (current_pos.y - self.last_position.y)**2
+            )
+            
+            if distance < 0.05:  # Robot casi estático (umbral reducido)
+                self.position_stuck_time += (current_time - self.last_position_time)
+            else:
+                self.position_stuck_time = 0
+        
+        self.robot_pose = msg.pose.pose
+        self.last_position = current_pos
+        self.last_position_time = current_time
+    
+    def _scan_callback(self, msg: LaserScan):
+        """Almacenar datos de laser scan"""
+        self.last_scan = msg
+    
+    def _cmd_vel_callback(self, msg: Twist):
+        """Monitorear comandos de velocidad para detectar conflictos"""
+        # Este callback nos permite detectar si hay movimiento pero el robot está atascado
+        has_command = abs(msg.linear.x) > 0.01 or abs(msg.angular.z) > 0.01
+        
+        if has_command and self.position_stuck_time > 20.0:
+            # Robot recibe comandos pero no se mueve - posible problema
+            self._report_stuck_condition()
+    
+    # =========================================================================
+    # LÓGICA DE MONITOREO - Inteligente y coordinada
+    # =========================================================================
+    
+    def _monitor_exploration(self):
+        """Función principal de monitoreo - COORDINA CON SISTEMA CENTRAL"""
+        if not self.monitoring_active:
             return
         
-        self.get_logger().info("🧹 Limpiando costmaps...")
+        current_time = time.time()
         
-        # Limpiar costmap local
-        if self.clear_local_costmap.service_is_ready():
-            req = ClearEntireCostmap.Request()
-            future = self.clear_local_costmap.call_async(req)
+        # Solo actuar si la exploración está activa según el coordinador
+        if not self.coordinator_state.get('exploration_active', False):
+            return
         
-        # Limpiar costmap global  
-        if self.clear_global_costmap.service_is_ready():
-            req = ClearEntireCostmap.Request()
-            future = self.clear_global_costmap.call_async(req)
+        # Verificar si hay override manual/voz activo
+        if (self.coordinator_state.get('manual_override_active', False) or 
+            self.coordinator_state.get('voice_control_active', False)):
+            self.get_logger().debug('Monitor pausado - control manual/voz activo')
+            return
         
-        self.last_costmap_clear = current_time
-        time.sleep(0.5)  # Pequeña pausa para que se aplique la limpieza
+        # Análisis de condiciones de exploración
+        conditions = self._analyze_exploration_conditions()
+        
+        # Decidir acción basada en análisis
+        action_needed = self._determine_action_needed(conditions)
+        
+        if action_needed:
+            self._request_exploration_action(action_needed, conditions)
     
-    def find_frontiers(self, occupancy_grid):
-        """Encuentra fronteras usando procesamiento de imágenes"""
-        if not occupancy_grid:
+    def _analyze_exploration_conditions(self) -> Dict[str, Any]:
+        """Analizar condiciones actuales de exploración"""
+        current_time = time.time()
+        
+        conditions = {
+            'timestamp': current_time,
+            'map_growth_stalled': (current_time - self.last_map_growth) > self.get_parameter('map_growth_timeout').value,
+            'robot_stuck': self.position_stuck_time > self.get_parameter('position_stuck_timeout').value,
+            'frontiers_available': False,
+            'coverage_complete': False,
+            'needs_recovery': False
+        }
+        
+        # Analizar fronteras disponibles
+        if self.current_map and self.robot_pose:
+            frontiers = self._find_frontiers()
+            conditions['frontiers_available'] = len(frontiers) > 0
+            conditions['frontier_count'] = len(frontiers)
+            conditions['best_frontier'] = frontiers[0] if frontiers else None
+        
+        # Analizar cobertura del mapa
+        if self.current_map:
+            coverage_analysis = self._analyze_map_coverage()
+            conditions['coverage_ratio'] = coverage_analysis.get('coverage_ratio', 0.0)
+            conditions['coverage_complete'] = coverage_analysis.get('coverage_ratio', 0.0) > 0.90
+        
+        # Determinar si se necesita recuperación
+        conditions['needs_recovery'] = (
+            conditions['map_growth_stalled'] or 
+            conditions['robot_stuck']
+        )
+        
+        return conditions
+    
+    def _determine_action_needed(self, conditions: Dict[str, Any]) -> Optional[str]:
+        """Determinar qué acción se necesita basada en las condiciones"""
+        
+        # Si exploración está completa
+        if conditions.get('coverage_complete', False):
+            return 'complete_exploration'
+        
+        # Si robot está atascado o sin progreso
+        if conditions.get('needs_recovery', False):
+            return 'request_recovery'
+        
+        # Si hay fronteras disponibles para explorar
+        if conditions.get('frontiers_available', False):
+            return 'explore_frontier'
+        
+        # Si no hay fronteras pero cobertura es baja, búsqueda sistemática
+        if conditions.get('coverage_ratio', 0.0) < 0.80:
+            return 'systematic_exploration'
+        
+        return None
+    
+    def _request_exploration_action(self, action: str, conditions: Dict[str, Any]):
+        """Solicitar acción al coordinador - COMUNICACIÓN ESTRUCTURADA"""
+        request_data = {
+            'type': action,
+            'conditions': conditions,
+            'timestamp': time.time(),
+            'source': 'exploration_monitor'
+        }
+        
+        # Agregar datos específicos según el tipo de acción
+        if action == 'explore_frontier' and conditions.get('best_frontier'):
+            request_data['frontier'] = conditions['best_frontier']
+        
+        elif action == 'request_recovery':
+            request_data['recovery_reason'] = []
+            if conditions.get('map_growth_stalled'):
+                request_data['recovery_reason'].append('map_growth_stalled')
+            if conditions.get('robot_stuck'):
+                request_data['recovery_reason'].append('robot_stuck')
+        
+        # Enviar solicitud al coordinador
+        request_msg = String()
+        request_msg.data = json.dumps(request_data)
+        self.exploration_request_pub.publish(request_msg)
+        
+        self.get_logger().info(
+            f'📝 Solicitada acción: {action} '
+            f'(fronteras: {conditions.get("frontier_count", 0)}, '
+            f'cobertura: {conditions.get("coverage_ratio", 0)*100:.1f}%)'
+        )
+    
+    def _report_stuck_condition(self):
+        """Reportar condición de robot atascado"""
+        report_data = {
+            'type': 'robot_stuck_detected',
+            'stuck_time': self.position_stuck_time,
+            'timestamp': time.time(),
+            'position': {
+                'x': self.robot_pose.position.x,
+                'y': self.robot_pose.position.y
+            } if self.robot_pose else None
+        }
+        
+        request_msg = String()
+        request_msg.data = json.dumps(report_data)
+        self.exploration_request_pub.publish(request_msg)
+        
+        self.get_logger().warn(f'🚨 Robot atascado detectado ({self.position_stuck_time:.1f}s)')
+    
+    # =========================================================================
+    # ANÁLISIS DE FRONTERAS - Mejorado y eficiente
+    # =========================================================================
+    
+    def _find_frontiers(self):
+        """Encontrar fronteras de exploración disponibles"""
+        if not self.current_map or not self.robot_pose:
             return []
         
-        # Convertir a array numpy
-        width = occupancy_grid.info.width
-        height = occupancy_grid.info.height
-        resolution = occupancy_grid.info.resolution
-        origin = occupancy_grid.info.origin.position
-        
-        # Convertir datos del mapa
-        map_array = np.array(occupancy_grid.data).reshape(height, width)
-        
-        # Crear imagen binaria (0=libre, 100=ocupado, -1=desconocido)
-        free_space = (map_array == 0).astype(np.uint8) * 255
-        unknown_space = (map_array == -1).astype(np.uint8) * 255
-        
-        # Encontrar fronteras (bordes entre espacio libre y desconocido)
-        kernel = np.ones((3, 3), np.uint8)
-        
-        # Dilatar espacio libre
-        free_dilated = cv2.dilate(free_space, kernel, iterations=1)
-        
-        # Fronteras = espacio libre dilatado ∩ espacio desconocido
-        frontiers = cv2.bitwise_and(free_dilated, unknown_space)
-        
-        # Encontrar contornos de fronteras
-        contours, _ = cv2.findContours(frontiers, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        frontier_points = []
-        for contour in contours:
-            # Solo considerar fronteras suficientemente grandes
-            if cv2.contourArea(contour) > self.min_frontier_size:
-                # Obtener centroide
+        try:
+            width = self.current_map.info.width
+            height = self.current_map.info.height
+            resolution = self.current_map.info.resolution
+            origin = self.current_map.info.origin
+            
+            map_array = np.array(self.current_map.data).reshape((height, width))
+            
+            # Crear máscaras
+            free_space = (map_array == 0)
+            unknown_space = (map_array == -1)
+            
+            # Encontrar fronteras usando operaciones morfológicas
+            kernel = np.ones((3, 3), np.uint8)
+            free_dilated = cv2.dilate(free_space.astype(np.uint8), kernel, iterations=1)
+            frontiers = free_dilated & unknown_space
+            
+            # Encontrar contornos
+            contours, _ = cv2.findContours(
+                frontiers.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            frontier_points = []
+            robot_x = self.robot_pose.position.x
+            robot_y = self.robot_pose.position.y
+            
+            for contour in contours:
+                if cv2.contourArea(contour) < 3:  # Filtrar fronteras muy pequeñas
+                    continue
+                
+                # Calcular centroide
                 M = cv2.moments(contour)
-                if M['m00'] > 0:
-                    cx = int(M['m10'] / M['m00'])
-                    cy = int(M['m01'] / M['m00'])
+                if M["m00"] == 0:
+                    continue
                     
-                    # Convertir coordenadas de grid a mundo
-                    world_x = origin.x + cx * resolution
-                    world_y = origin.y + cy * resolution
-                    
-                    frontier_points.append((world_x, world_y, cv2.contourArea(contour)))
-        
-        return frontier_points
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                
+                # Convertir a coordenadas del mundo
+                world_x = origin.position.x + cx * resolution
+                world_y = origin.position.y + cy * resolution
+                
+                # Calcular distancia al robot
+                distance = math.sqrt((world_x - robot_x)**2 + (world_y - robot_y)**2)
+                
+                # Filtrar por distancia
+                min_dist = self.get_parameter('min_frontier_distance').value
+                max_dist = self.get_parameter('max_exploration_distance').value
+                
+                if min_dist < distance < max_dist:
+                    # Verificar que no se haya explorado recientemente
+                    frontier_key = (round(world_x, 0.5), round(world_y, 0.5))
+                    if frontier_key not in self.explored_frontiers:
+                        frontier_points.append({
+                            'x': world_x,
+                            'y': world_y,
+                            'distance': distance,
+                            'size': cv2.contourArea(contour),
+                            'priority': cv2.contourArea(contour) / (distance + 0.1)
+                        })
+                        
+                        # Agregar a historia (con límite)
+                        self.explored_frontiers.add(frontier_key)
+                        if len(self.explored_frontiers) > 30:
+                            # Limpiar las más antigas
+                            old_frontiers = list(self.explored_frontiers)[:10]
+                            for old_frontier in old_frontiers:
+                                self.explored_frontiers.discard(old_frontier)
+            
+            # Ordenar por prioridad (tamaño/distancia)
+            frontier_points.sort(key=lambda f: f['priority'], reverse=True)
+            
+            return frontier_points[:5]  # Devolver las 5 mejores
+            
+        except Exception as e:
+            self.get_logger().error(f'Error encontrando fronteras: {e}')
+            return []
     
-    def find_unexplored_areas(self):
-        """Encuentra áreas no exploradas usando el mapa actual"""
+    def _analyze_map_coverage(self) -> Dict[str, Any]:
+        """Analizar cobertura del mapa actual"""
         if not self.current_map:
-            return
+            return {'coverage_ratio': 0.0, 'status': 'no_map'}
         
-        frontiers = self.find_frontiers(self.current_map)
-        
-        # Filtrar fronteras por distancia mínima
-        filtered_frontiers = []
-        for frontier in frontiers:
-            x, y, area = frontier
-            too_close = False
+        try:
+            map_data = np.array(self.current_map.data)
+            total_cells = len(map_data)
+            known_cells = np.sum(map_data >= 0)
+            free_cells = np.sum(map_data == 0)
+            obstacle_cells = np.sum(map_data == 100)
+            unknown_cells = np.sum(map_data == -1)
             
-            # Verificar distancia a fronteras ya conocidas
-            for existing in filtered_frontiers:
-                ex, ey, _ = existing
-                distance = math.sqrt((x - ex)**2 + (y - ey)**2)
-                if distance < self.frontier_distance_threshold:
-                    too_close = True
-                    break
+            coverage_ratio = known_cells / total_cells if total_cells > 0 else 0.0
             
-            if not too_close:
-                filtered_frontiers.append(frontier)
-        
-        self.unexplored_frontiers = filtered_frontiers
-        
-        if len(self.unexplored_frontiers) > 0:
-            self.get_logger().info(f"🎯 Encontradas {len(self.unexplored_frontiers)} fronteras no exploradas")
-        else:
-            self.get_logger().info("🏁 No se encontraron más fronteras - exploración completa?")
+            return {
+                'total_cells': total_cells,
+                'known_cells': known_cells,
+                'free_cells': free_cells,
+                'obstacle_cells': obstacle_cells,
+                'unknown_cells': unknown_cells,
+                'coverage_ratio': coverage_ratio,
+                'status': 'complete' if coverage_ratio > 0.90 else 'exploring'
+            }
+            
+        except Exception as e:
+            self.get_logger().error(f'Error analizando cobertura: {e}')
+            return {'coverage_ratio': 0.0, 'status': 'error'}
     
-    def get_best_frontier(self):
-        """Selecciona la mejor frontera para explorar"""
-        if not self.unexplored_frontiers or not self.robot_position:
-            return None
-        
-        robot_x = self.robot_position.x
-        robot_y = self.robot_position.y
-        
-        # Calcular score para cada frontera (distancia + tamaño)
-        best_frontier = None
-        best_score = float('inf')
-        
-        for frontier in self.unexplored_frontiers:
-            x, y, area = frontier
+    def _publish_monitor_status(self):
+        """Publicar estado del monitor periódicamente"""
+        try:
+            status = {
+                'monitoring_active': self.monitoring_active,
+                'coordinator_state': self.coordinator_state,
+                'last_map_growth': self.last_map_growth,
+                'position_stuck_time': self.position_stuck_time,
+                'frontiers_count': len(self._find_frontiers()) if self.current_map and self.robot_pose else 0,
+                'timestamp': time.time()
+            }
             
-            # Distancia al robot
-            distance = math.sqrt((x - robot_x)**2 + (y - robot_y)**2)
+            # Agregar análisis de cobertura si hay mapa
+            if self.current_map:
+                coverage = self._analyze_map_coverage()
+                status['coverage_ratio'] = coverage.get('coverage_ratio', 0.0)
+                status['coverage_status'] = coverage.get('status', 'unknown')
             
-            # Score combinado (menor distancia + mayor área = mejor)
-            score = distance / (area + 1)  # +1 para evitar división por cero
+            status_msg = String()
+            status_msg.data = json.dumps(status)
+            self.monitor_status_pub.publish(status_msg)
             
-            if score < best_score:
-                best_score = score
-                best_frontier = frontier
-        
-        return best_frontier
-    
-    def send_exploration_goal(self, x, y, yaw=None):
-        """Envía objetivo de exploración"""
-        goal = PoseStamped()
-        goal.header.frame_id = 'map'
-        goal.header.stamp = self.get_clock().now().to_msg()
-        
-        goal.pose.position.x = x
-        goal.pose.position.y = y
-        goal.pose.position.z = 0.0
-        
-        if yaw is None:
-            # Orientación hacia el objetivo si no se especifica
-            if self.robot_position:
-                dx = x - self.robot_position.x
-                dy = y - self.robot_position.y
-                yaw = math.atan2(dy, dx)
-            else:
-                yaw = 0.0
-        
-        goal.pose.orientation.z = math.sin(yaw / 2.0)
-        goal.pose.orientation.w = math.cos(yaw / 2.0)
-        
-        self.goal_pub.publish(goal)
-        self.get_logger().info(f"🎯 Objetivo enviado: ({x:.2f}, {y:.2f})")
-    
-    def perform_recovery_spin(self):
-        """Giro de recuperación para actualizar percepción"""
-        self.get_logger().info("🔄 Realizando giro de recuperación...")
-        
-        twist = Twist()
-        twist.angular.z = 1.0
-        
-        # Girar por 2 segundos
-        for _ in range(10):
-            self.cmd_vel_pub.publish(twist)
-            time.sleep(0.2)
-        
-        # Detener
-        self.cmd_vel_pub.publish(Twist())
-        
-        # Limpiar costmaps después del giro
-        time.sleep(1.0)
-        self.clear_costmaps()
-    
-    def periodic_cleanup(self):
-        """Limpieza periódica del sistema"""
-        current_time = time.time()
-        
-        # Limpieza automática cada cierto tiempo
-        if current_time - self.last_costmap_clear > self.costmap_clear_interval:
-            self.clear_costmaps()
-    
-    def monitor_exploration(self):
-        """Monitoreo principal de la exploración"""
-        current_time = time.time()
-        time_since_exploration = current_time - self.last_exploration_time
-        
-        exploration_stalled = time_since_exploration > self.exploration_timeout
-        robot_stuck = self.stuck_counter > (self.stuck_threshold / 3.0)
-        
-        if exploration_stalled or robot_stuck:
-            self.get_logger().warn(f"⚠️  Problema detectado:")
-            self.get_logger().warn(f"   - Tiempo sin progreso: {time_since_exploration:.1f}s")
-            self.get_logger().warn(f"   - Inmóvil por: {self.stuck_counter * 3.0:.1f}s")
-            
-            # Estrategia de recuperación
-            self.restart_exploration()
-    
-    def restart_exploration(self):
-        """Reinicia la exploración con estrategias múltiples"""
-        self.get_logger().info("🚨 REINICIANDO EXPLORACIÓN")
-        
-        # 1. Limpiar costmaps primero
-        self.clear_costmaps()
-        
-        # 2. Giro de recuperación
-        self.perform_recovery_spin()
-        
-        # 3. Buscar nueva frontera
-        self.find_unexplored_areas()
-        
-        best_frontier = self.get_best_frontier()
-        
-        if best_frontier:
-            x, y, area = best_frontier
-            self.send_exploration_goal(x, y)
-            self.get_logger().info(f"✅ Enviado a frontera: ({x:.2f}, {y:.2f}) área={area:.0f}")
-        else:
-            # 4. Si no hay fronteras, explorar aleatoriamente
-            self.explore_randomly()
-        
-        # Resetear contadores
-        self.last_exploration_time = time.time()
-        self.stuck_counter = 0
-    
-    def explore_randomly(self):
-        """Exploración aleatoria cuando no hay fronteras"""
-        self.get_logger().info("🎲 Explorando aleatoriamente...")
-        
-        if not self.robot_position:
-            return
-        
-        # Generar múltiples objetivos aleatorios
-        for i in range(3):
-            angle = np.random.uniform(0, 2 * np.pi)
-            distance = np.random.uniform(2.0, 4.0)
-            
-            x = self.robot_position.x + distance * np.cos(angle)
-            y = self.robot_position.y + distance * np.sin(angle)
-            
-            self.send_exploration_goal(x, y, angle)
-            time.sleep(1.0)  # Pausa entre objetivos
+        except Exception as e:
+            self.get_logger().error(f'Error publicando estado monitor: {e}')
 
 
 def main(args=None):
     rclpy.init(args=args)
     
-    monitor = EnhancedExplorationMonitor()
-    
     try:
+        monitor = EnhancedExplorationMonitor()
         rclpy.spin(monitor)
     except KeyboardInterrupt:
-        monitor.get_logger().info("Monitor detenido por usuario")
+        print('Cerrando Enhanced Exploration Monitor...')
+    except Exception as e:
+        print(f'Error en Enhanced Exploration Monitor: {e}')
     finally:
-        monitor.destroy_node()
+        try:
+            monitor.destroy_node()
+        except:
+            pass
         rclpy.shutdown()
 
 
