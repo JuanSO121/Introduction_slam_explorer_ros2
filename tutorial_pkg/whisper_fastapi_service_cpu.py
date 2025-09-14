@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Servicio FastAPI con Whisper para tutorial_pkg
-Procesa audio desde Flutter y publica comandos a ROS2
-Ubicación: ~/ros2_ws/src/tutorial_pkg/tutorial_pkg/whisper_fastapi_service.py
+Servicio FastAPI con Whisper para tutorial_pkg - Versión Thread-Safe
+Soluciona el problema de "double free detected in tcache 2"
+Ubicación: ~/ros2_ws/src/tutorial_pkg/tutorial_pkg/whisper_fastapi_service_cpu.py
 """
 
 import os
@@ -14,6 +14,7 @@ import asyncio
 import threading
 from pathlib import Path
 from typing import Optional, Dict, Any
+import multiprocessing as mp
 
 # FastAPI y componentes web
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -21,10 +22,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
 
+# CONFIGURACIONES CRÍTICAS PARA EVITAR DOUBLE FREE
+os.environ["TORCH_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["PYTHONUNBUFFERED"] = "1"
+
 # Whisper para transcripción
 try:
     import whisper
     import torch
+    # FORZAR CPU SIEMPRE para evitar conflictos CUDA
+    torch.set_num_threads(1)
+    if hasattr(torch.backends, 'openmp'):
+        torch.backends.openmp.is_available = lambda: False
     WHISPER_AVAILABLE = True
 except ImportError:
     WHISPER_AVAILABLE = False
@@ -68,6 +80,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# LOCK GLOBAL PARA OPERACIONES THREAD-SAFE
+whisper_lock = threading.Lock()
+
 class WhisperROS2Bridge(Node):
     """Nodo ROS2 para publicar comandos transcritos por Whisper"""
     
@@ -82,8 +97,8 @@ class WhisperROS2Bridge(Node):
         self.commands_sent = 0
         self.start_time = time.time()
         
-        self.get_logger().info('🌉 Whisper-ROS2 Bridge iniciado')
-        self.get_logger().info('📡 Publicando en /voice_commands')
+        self.get_logger().info('Bridge Whisper-ROS2 iniciado')
+        self.get_logger().info('Publicando en /voice_commands')
     
     def publish_voice_command(self, command: str) -> bool:
         """Publicar comando de voz al sistema ROS2 existente"""
@@ -94,11 +109,11 @@ class WhisperROS2Bridge(Node):
             self.voice_commands_pub.publish(msg)
             self.commands_sent += 1
             
-            self.get_logger().info(f'📤 Comando enviado: "{command}"')
+            self.get_logger().info(f'Comando enviado: "{command}"')
             return True
             
         except Exception as e:
-            self.get_logger().error(f'❌ Error publicando comando: {e}')
+            self.get_logger().error(f'Error publicando comando: {e}')
             return False
     
     def get_stats(self) -> Dict[str, Any]:
@@ -111,66 +126,82 @@ class WhisperROS2Bridge(Node):
         }
 
 class WhisperService:
-    """Servicio de transcripción con Whisper optimizado"""
+    """Servicio de transcripción con Whisper optimizado y thread-safe"""
     
     def __init__(self):
         self.model = None
-        # CAMBIO 1: Modelo más preciso pero aún rápido
-        self.model_name = "small"  # Era "base" - small es ~2x más preciso con solo +30% tiempo
-        self.device = "cuda" if torch and torch.cuda.is_available() else "cpu"
+        self.model_name = "base"  # Modelo más liviano para evitar problemas
+        self.device = "cpu"  # FORZAR CPU SIEMPRE
         
-        # NUEVO: Cache de configuraciones óptimas por GPU
-        self.optimal_batch_size = self._detect_optimal_batch_size()
+        # Variables para evitar race conditions
+        self._model_loading = False
+        self._transcription_in_progress = False
         
         self.load_model()
         
-        # Estadísticas (sin cambios)
+        # Estadísticas
         self.transcriptions_count = 0
         self.total_processing_time = 0.0
     
-    def _detect_optimal_batch_size(self):
-        """Detectar batch size óptimo según GPU disponible"""
-        if not torch or not torch.cuda.is_available():
-            return 1
-        
-        gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
-        
-        if gpu_memory >= 8:
-            return 4  # GPUs potentes
-        elif gpu_memory >= 4:
-            return 2  # GPUs medias
-        else:
-            return 1  # GPUs básicas o CPU
-        
     def load_model(self):
-        """Cargar modelo Whisper"""
+        """Cargar modelo Whisper de forma thread-safe"""
         if not WHISPER_AVAILABLE:
-            logger.error("❌ Whisper no está disponible")
+            logger.error("Whisper no está disponible")
             return
         
-        try:
-            logger.info(f"🤖 Cargando Whisper modelo '{self.model_name}' en {self.device}")
-            self.model = whisper.load_model(self.model_name, device=self.device)
-            logger.info("✅ Modelo Whisper cargado exitosamente")
-        except Exception as e:
-            logger.error(f"❌ Error cargando modelo Whisper: {e}")
-            self.model = None
+        with whisper_lock:  # THREAD SAFETY CRÍTICO
+            if self._model_loading:
+                logger.warning("Modelo ya se está cargando...")
+                return
+                
+            self._model_loading = True
+            
+            try:
+                logger.info(f"Cargando Whisper modelo '{self.model_name}' en CPU")
+                
+                # CONFIGURACIÓN CRÍTICA: Cargar siempre en CPU
+                self.model = whisper.load_model(self.model_name, device="cpu")
+                
+                # Verificar que está en CPU
+                if hasattr(self.model, 'device'):
+                    logger.info(f"Modelo cargado en dispositivo: {self.model.device}")
+                
+                logger.info("Modelo Whisper cargado exitosamente")
+                
+            except Exception as e:
+                logger.error(f"Error cargando modelo Whisper: {e}")
+                self.model = None
+            finally:
+                self._model_loading = False
     
     def transcribe_audio(self, audio_path: str) -> Dict[str, Any]:
-        """Transcribir archivo de audio con configuraciones optimizadas"""
+        """Transcribir archivo de audio de forma thread-safe"""
         start_time = time.time()
         
-        if not self.model:
-            return {
-                'success': False,
-                'error': 'Modelo Whisper no disponible',
-                'transcription': None,
-                'confidence': 0.0,
-                'processing_time': 0.0
-            }
+        # VERIFICACIÓN THREAD-SAFE
+        with whisper_lock:
+            if self._transcription_in_progress:
+                return {
+                    'success': False,
+                    'error': 'Transcripción ya en progreso - servicio ocupado',
+                    'transcription': None,
+                    'confidence': 0.0,
+                    'processing_time': 0.0
+                }
+            
+            if not self.model:
+                return {
+                    'success': False,
+                    'error': 'Modelo Whisper no disponible',
+                    'transcription': None,
+                    'confidence': 0.0,
+                    'processing_time': 0.0
+                }
+            
+            self._transcription_in_progress = True
         
         try:
-            logger.info(f"🎤 Transcribiendo: {audio_path}")
+            logger.info(f"Transcribiendo: {audio_path}")
             
             # Verificar que el archivo existe
             if not os.path.exists(audio_path):
@@ -182,33 +213,26 @@ class WhisperService:
                     'processing_time': 0.0
                 }
             
-            # Preprocesar audio (mejorado)
-            processed_audio_path = self._preprocess_audio_enhanced(audio_path)
+            # Preprocesar audio
+            processed_audio_path = self._preprocess_audio_safe(audio_path)
             
-            # CAMBIO 2: Configuraciones optimizadas para español
-            result = self.model.transcribe(
-                processed_audio_path,
-                language='es',  # Forzar español es más preciso que auto-detect
-                task='transcribe',
-                verbose=False,
-                # NUEVAS CONFIGURACIONES CRÍTICAS PARA PRECISIÓN:
-                beam_size=5,  # Era default (1) - Mejora precisión significativamente
-                best_of=5,    # Era default (1) - Usa mejores candidatos
-                temperature=0.0,  # Era default (0) - Menos aleatoriedad = más consistente
-                compression_ratio_threshold=2.4,  # Detecta mejor audio problemático
-                logprob_threshold=-1.0,  # Filtra segmentos de baja confianza
-                no_speech_threshold=0.6,  # Mejor detección de silencio
-                condition_on_previous_text=True,  # Usa contexto previo
-                # NUEVO: Configuración de VAD (Voice Activity Detection)
-                word_timestamps=True,  # Timestamps por palabra para mejor análisis
-            )
+            # TRANSCRIPCIÓN CON CONFIGURACIÓN SEGURA
+            with whisper_lock:  # LOCK durante transcripción
+                result = self.model.transcribe(
+                    processed_audio_path,
+                    language='es',
+                    task='transcribe',
+                    verbose=False,
+                    # CONFIGURACIÓN CONSERVADORA PARA ESTABILIDAD
+                    beam_size=1,  # Reducido para evitar problemas de memoria
+                    best_of=1,    # Simplificado
+                    temperature=0.0,
+                    word_timestamps=False,  # Deshabilitado para reducir complejidad
+                    fp16=False,   # CRÍTICO: Deshabilitar FP16 para CPU
+                )
             
             transcription = result.get('text', '').strip()
-            
-            # CAMBIO 3: Cálculo de confianza mejorado con word-level analysis
-            confidence = self._calculate_enhanced_confidence(result)
-            
-            # NUEVO: Post-procesamiento de texto en español
+            confidence = self._calculate_confidence_safe(result)
             transcription = self._post_process_spanish_text(transcription)
             
             processing_time = time.time() - start_time
@@ -217,7 +241,7 @@ class WhisperService:
             self.transcriptions_count += 1
             self.total_processing_time += processing_time
             
-            logger.info(f"✅ Transcripción: '{transcription}' (confianza: {confidence:.2f}, tiempo: {processing_time:.2f}s)")
+            logger.info(f"Transcripción exitosa: '{transcription}' (confianza: {confidence:.2f}, tiempo: {processing_time:.2f}s)")
             
             # Limpiar archivo procesado si es diferente al original
             if processed_audio_path != audio_path:
@@ -233,14 +257,13 @@ class WhisperService:
                 'confidence': confidence,
                 'processing_time': processing_time,
                 'language': result.get('language', 'es'),
-                # NUEVO: Metadatos adicionales para debugging
                 'word_count': len(transcription.split()) if transcription else 0,
-                'segments_count': len(result.get('segments', [])),
+                'device_used': 'cpu'
             }
             
         except Exception as e:
             processing_time = time.time() - start_time
-            logger.error(f"❌ Error transcribiendo audio: {e}")
+            logger.error(f"Error transcribiendo audio: {e}")
             
             return {
                 'success': False,
@@ -249,88 +272,50 @@ class WhisperService:
                 'confidence': 0.0,
                 'processing_time': processing_time
             }
+        finally:
+            # SIEMPRE liberar el lock
+            with whisper_lock:
+                self._transcription_in_progress = False
     
-    def _calculate_enhanced_confidence(self, whisper_result) -> float:
-        """Cálculo de confianza más preciso usando múltiples métricas"""
-        segments = whisper_result.get('segments', [])
-        if not segments:
-            return 0.0
-        
-        # Método 1: Promedio de logprobs por segmento
-        avg_logprob = sum(seg.get('avg_logprob', -10) for seg in segments) / len(segments)
-        logprob_confidence = max(0.0, min(1.0, (avg_logprob + 1.0) * 0.8))
-        
-        # Método 2: Análisis de palabras con timestamps
-        if 'words' in whisper_result:
-            word_confidences = []
-            for word_info in whisper_result['words']:
-                if 'probability' in word_info:
-                    word_confidences.append(word_info['probability'])
+    def _calculate_confidence_safe(self, whisper_result) -> float:
+        """Cálculo de confianza simplificado para evitar errores"""
+        try:
+            segments = whisper_result.get('segments', [])
+            if not segments:
+                return 0.5  # Confianza neutral por defecto
             
-            if word_confidences:
-                word_confidence = sum(word_confidences) / len(word_confidences)
-            else:
-                word_confidence = logprob_confidence
-        else:
-            word_confidence = logprob_confidence
-        
-        # Método 3: Penalizar por compression ratio alto (audio problemático)
-        compression_ratios = [seg.get('compression_ratio', 2.0) for seg in segments]
-        avg_compression = sum(compression_ratios) / len(compression_ratios)
-        compression_penalty = max(0.0, min(1.0, (4.0 - avg_compression) / 2.0))
-        
-        # Combinar métricas con pesos
-        final_confidence = (
-            logprob_confidence * 0.4 +
-            word_confidence * 0.4 +
-            compression_penalty * 0.2
-        )
-        
-        return max(0.0, min(1.0, final_confidence))
+            # Solo usar avg_logprob para simplicidad
+            avg_logprob = sum(seg.get('avg_logprob', -1.0) for seg in segments) / len(segments)
+            confidence = max(0.0, min(1.0, (avg_logprob + 1.0)))
+            
+            return confidence
+        except:
+            return 0.5  # Fallback seguro
     
     def _post_process_spanish_text(self, text: str) -> str:
         """Post-procesamiento específico para español"""
         if not text:
             return text
         
-        # Correcciones comunes en español para comandos de robot
+        # Correcciones básicas
         corrections = {
-            # Números comunes en comandos
-            'un metro': '1 metro',
-            'dos metros': '2 metros',
-            'tres metros': '3 metros',
-            'medio metro': '0.5 metros',
-            
-            # Direcciones comunes
-            'hacia delante': 'adelante',
-            'hacia atrás': 'atrás',
-            'hacia la derecha': 'derecha',
-            'hacia la izquierda': 'izquierda',
-            
-            # Comandos de movimiento
             'muévete': 'mueve',
             'avanza': 'adelante',
             'retrocede': 'atrás',
-            'gira': 'girar',
-            
-            # Correcciones de acentos que Whisper a veces omite
-            'rapido': 'rápido',
-            'despacio': 'despacio',
-            'para': 'para',
+            'hacia delante': 'adelante',
+            'hacia atrás': 'atrás',
+            'hacia la derecha': 'derecha',
+            'hacia la izquierda': 'izquierda'
         }
         
-        # Aplicar correcciones
         processed_text = text.lower()
         for wrong, correct in corrections.items():
             processed_text = processed_text.replace(wrong, correct)
         
-        # Limpiar espacios extra
-        processed_text = ' '.join(processed_text.split())
-        
-        return processed_text.strip()
+        return ' '.join(processed_text.split()).strip()
     
-    def _preprocess_audio_enhanced(self, audio_path: str) -> str:
-        """Preprocesamiento de audio mejorado para mayor precisión"""
+    def _preprocess_audio_safe(self, audio_path: str) -> str:
+        """Preprocesamiento de audio simplificado y seguro"""
         if not AUDIO_PROCESSING_AVAILABLE:
             return audio_path
         
@@ -342,36 +327,7 @@ class WhisperService:
             if len(audio) < 0.1 * sr:  # menos de 100ms
                 return audio_path
             
-            # NUEVO: Filtrado de ruido más agresivo
-            # 1. Normalizar antes de filtrar
-            audio = librosa.util.normalize(audio)
-            
-            # 2. Filtro de pre-énfasis más suave para voz
-            audio = librosa.effects.preemphasis(audio, coef=0.97)
-            
-            # 3. NUEVO: Reducción de ruido espectral básica
-            if NUMPY_AVAILABLE:
-                # Calcular spectrograma
-                S = librosa.stft(audio)
-                S_magnitude = np.abs(S)
-                
-                # Estimar ruido de los primeros 0.5 segundos (asumiendo silencio inicial)
-                noise_frames = min(int(0.5 * sr / 512), S_magnitude.shape[1] // 4)
-                if noise_frames > 0:
-                    noise_profile = np.mean(S_magnitude[:, :noise_frames], axis=1, keepdims=True)
-                    
-                    # Aplicar reducción de ruido suave
-                    noise_factor = 0.15  # Reducir ruido al 15% del nivel original
-                    S_magnitude_clean = np.maximum(S_magnitude, noise_factor * noise_profile)
-                    
-                    # Reconstruir señal
-                    S_clean = S_magnitude_clean * np.exp(1j * np.angle(S))
-                    audio = librosa.istft(S_clean)
-            
-            # 4. NUEVO: Compresión dinámica suave para mejorar SNR
-            audio = self._soft_compressor(audio)
-            
-            # 5. Normalización final
+            # Procesamiento básico y seguro
             audio = librosa.util.normalize(audio)
             
             # Guardar audio procesado
@@ -379,64 +335,10 @@ class WhisperService:
                 processed_path = temp_file.name
             
             sf.write(processed_path, audio, sr)
-            
-            logger.debug(f"🔧 Audio mejorado: {audio_path} -> {processed_path}")
             return processed_path
             
         except Exception as e:
-            logger.warning(f"⚠️ Error en preprocesamiento mejorado: {e}, usando versión básica")
-            return self._preprocess_audio_basic(audio_path)
-    
-    def _soft_compressor(self, audio, threshold=0.8, ratio=3.0, attack=0.003, release=0.1):
-        """Compresor dinámico suave para mejorar consistencia de volumen"""
-        if not NUMPY_AVAILABLE:
-            return audio
-            
-        try:
-            # Calcular envelope de la señal
-            envelope = np.abs(audio)
-            
-            # Suavizar envelope
-            kernel_size = int(0.01 * 16000)  # 10ms window
-            if kernel_size > 1:
-                kernel = np.ones(kernel_size) / kernel_size
-                envelope = np.convolve(envelope, kernel, mode='same')
-            
-            # Aplicar compresión donde sea necesario
-            compressed = audio.copy()
-            over_threshold = envelope > threshold
-            
-            if np.any(over_threshold):
-                reduction_factor = threshold + (envelope - threshold) / ratio
-                gain_reduction = reduction_factor / envelope
-                gain_reduction = np.clip(gain_reduction, 0.3, 1.0)  # Limitar reducción
-                
-                compressed = audio * gain_reduction
-            
-            return compressed
-            
-        except:
-            return audio  # Si falla, devolver audio original
-    
-    def _preprocess_audio_basic(self, audio_path: str) -> str:
-        """Versión básica del preprocesamiento como fallback"""
-        try:
-            audio, sr = librosa.load(audio_path, sr=16000, mono=True)
-            
-            if len(audio) < 0.1 * sr:
-                return audio_path
-            
-            audio = librosa.util.normalize(audio)
-            audio = librosa.effects.preemphasis(audio)
-            
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-                processed_path = temp_file.name
-            
-            sf.write(processed_path, audio, sr)
-            return processed_path
-            
-        except Exception as e:
-            logger.warning(f"⚠️ Error preprocesando audio: {e}, usando original")
+            logger.warning(f"Error en preprocesamiento: {e}, usando original")
             return audio_path
     
     def get_stats(self) -> Dict[str, Any]:
@@ -452,7 +354,7 @@ class WhisperService:
             'model_name': self.model_name,
             'device': self.device,
             'model_loaded': self.model is not None,
-            'optimal_batch_size': self.optimal_batch_size
+            'thread_safe': True
         }
 
 # Variables globales
@@ -463,9 +365,9 @@ ros2_thread = None
 
 # Crear aplicación FastAPI
 app = FastAPI(
-    title="Whisper Voice Command Service",
-    description="Servicio de transcripción de voz para tutorial_pkg",
-    version="1.0.0"
+    title="Whisper Voice Command Service - CPU Safe",
+    description="Servicio de transcripción de voz thread-safe para tutorial_pkg",
+    version="1.1.0"
 )
 
 # Configurar CORS para permitir conexiones desde Flutter
@@ -482,7 +384,7 @@ def init_ros2_bridge():
     global ros2_bridge, ros2_executor, ros2_thread
     
     if not ROS2_AVAILABLE:
-        logger.error("❌ ROS2 no está disponible")
+        logger.error("ROS2 no está disponible")
         return False
     
     try:
@@ -496,38 +398,41 @@ def init_ros2_bridge():
             try:
                 ros2_executor.spin()
             except Exception as e:
-                logger.error(f"❌ Error en executor ROS2: {e}")
+                logger.error(f"Error en executor ROS2: {e}")
         
         ros2_thread = threading.Thread(target=spin_ros2, daemon=True)
         ros2_thread.start()
         
-        logger.info("✅ Bridge ROS2 iniciado correctamente")
+        logger.info("Bridge ROS2 iniciado correctamente")
         return True
         
     except Exception as e:
-        logger.error(f"❌ Error inicializando ROS2: {e}")
+        logger.error(f"Error inicializando ROS2: {e}")
         return False
 
-@app.on_event("startup")
-async def startup_event():
-    """Inicializar servicios al arrancar FastAPI"""
+# USAR LIFESPAN EN LUGAR DE ON_EVENT (corrige deprecation warning)
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     global whisper_service
     
-    logger.info("🚀 Iniciando Whisper FastAPI Service")
+    logger.info("Iniciando Whisper FastAPI Service")
     
     # Verificar dependencias
     missing_deps = []
     if not WHISPER_AVAILABLE:
-        missing_deps.append("whisper (pip install openai-whisper)")
+        missing_deps.append("whisper")
     if not ROS2_AVAILABLE:
-        missing_deps.append("ROS2 (source /opt/ros/humble/setup.bash)")
+        missing_deps.append("ROS2")
     if not AUDIO_PROCESSING_AVAILABLE:
-        missing_deps.append("librosa y soundfile (pip install librosa soundfile)")
+        missing_deps.append("librosa/soundfile")
     if not NUMPY_AVAILABLE:
-        missing_deps.append("numpy (pip install numpy)")
+        missing_deps.append("numpy")
     
     if missing_deps:
-        logger.warning(f"⚠️ Dependencias faltantes: {', '.join(missing_deps)}")
+        logger.warning(f"Dependencias faltantes: {', '.join(missing_deps)}")
     
     # Inicializar servicios
     if WHISPER_AVAILABLE:
@@ -536,14 +441,14 @@ async def startup_event():
     if ROS2_AVAILABLE:
         init_ros2_bridge()
     
-    logger.info("✅ Servicios iniciados")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Limpiar recursos al cerrar"""
+    logger.info("Servicios iniciados correctamente")
+    
+    yield
+    
+    # Shutdown
     global ros2_executor, ros2_bridge
     
-    logger.info("🛑 Cerrando servicios...")
+    logger.info("Cerrando servicios...")
     
     if ros2_executor:
         ros2_executor.shutdown()
@@ -553,6 +458,9 @@ async def shutdown_event():
     
     if ROS2_AVAILABLE and rclpy.ok():
         rclpy.shutdown()
+
+# Asignar lifespan a la app
+app.router.lifespan_context = lifespan
 
 @app.get("/health")
 async def health_check():
@@ -564,7 +472,7 @@ async def health_check():
         'numpy': NUMPY_AVAILABLE
     }
     
-    status = "healthy" if all(services.values()) else "partial"
+    status = "healthy" if services['whisper'] else "partial"
     
     return {
         'status': status,
@@ -573,7 +481,9 @@ async def health_check():
         'ros2_connected': services['ros2'],
         'timestamp': time.time(),
         'uptime': time.time() - (ros2_bridge.start_time if ros2_bridge else time.time()),
-        'whisper_model': whisper_service.model_name if whisper_service else 'unknown'
+        'whisper_model': whisper_service.model_name if whisper_service else 'unknown',
+        'device': 'cpu',
+        'thread_safe': True
     }
 
 @app.post("/transcribe")
@@ -590,18 +500,11 @@ async def transcribe_audio(audio: UploadFile = File(...)):
     if not audio.filename:
         raise HTTPException(status_code=400, detail="Nombre de archivo requerido")
     
-    # Verificar formato de audio (opcional, Whisper es bastante flexible)
-    allowed_formats = {'.wav', '.mp3', '.m4a', '.flac', '.ogg'}
-    file_extension = Path(audio.filename).suffix.lower()
-    
-    if file_extension not in allowed_formats:
-        logger.warning(f"⚠️ Formato no recomendado: {file_extension}")
-    
     # Crear archivo temporal
     temp_file = None
     try:
         with tempfile.NamedTemporaryFile(
-            suffix=file_extension or '.wav',
+            suffix=Path(audio.filename).suffix or '.wav',
             delete=False
         ) as temp_file:
             # Leer y guardar archivo
@@ -610,10 +513,15 @@ async def transcribe_audio(audio: UploadFile = File(...)):
             temp_file.flush()
             temp_audio_path = temp_file.name
         
-        logger.info(f"📁 Audio recibido: {audio.filename} ({len(content)} bytes)")
+        logger.info(f"Audio recibido: {audio.filename} ({len(content)} bytes)")
         
-        # Transcribir
-        result = whisper_service.transcribe_audio(temp_audio_path)
+        # Transcribir de forma asíncrona pero thread-safe
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, 
+            whisper_service.transcribe_audio, 
+            temp_audio_path
+        )
         
         if result['success'] and result['transcription']:
             transcription = result['transcription']
@@ -633,7 +541,7 @@ async def transcribe_audio(audio: UploadFile = File(...)):
                 'ai_response': f'Comando "{transcription}" procesado correctamente',
                 'timestamp': time.time(),
                 'word_count': result.get('word_count', 0),
-                'segments_count': result.get('segments_count', 0)
+                'device_used': result.get('device_used', 'cpu')
             }
         else:
             return {
@@ -648,7 +556,7 @@ async def transcribe_audio(audio: UploadFile = File(...)):
             }
     
     except Exception as e:
-        logger.error(f"❌ Error procesando audio: {e}")
+        logger.error(f"Error procesando audio: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     
     finally:
@@ -682,15 +590,15 @@ async def send_text_command(request: dict):
         }
     
     except Exception as e:
-        logger.error(f"❌ Error enviando comando: {e}")
+        logger.error(f"Error enviando comando: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/stats")
 async def get_statistics():
     """Obtener estadísticas de los servicios"""
     stats = {
-        'service_name': 'Whisper FastAPI Service',
-        'version': '1.0.0',
+        'service_name': 'Whisper FastAPI Service - Thread Safe',
+        'version': '1.1.0',
         'timestamp': time.time()
     }
     
@@ -706,8 +614,8 @@ async def get_statistics():
 async def root():
     """Página de inicio con información del servicio"""
     return {
-        'message': 'Whisper Voice Command Service para tutorial_pkg',
-        'version': '1.0.0',
+        'message': 'Whisper Voice Command Service - Thread Safe para tutorial_pkg',
+        'version': '1.1.0',
         'endpoints': {
             '/health': 'Estado de servicios',
             '/transcribe': 'Transcribir audio (POST)',
@@ -717,6 +625,8 @@ async def root():
         'whisper_available': whisper_service is not None,
         'ros2_connected': ros2_bridge is not None,
         'whisper_model': whisper_service.model_name if whisper_service else 'unknown',
+        'device': 'cpu',
+        'thread_safe': True,
         'timestamp': time.time()
     }
 
@@ -724,43 +634,41 @@ def main():
     """Función principal para ejecutar el servicio"""
     
     # Configuración del servidor
-    host = "0.0.0.0"  # Escuchar en todas las interfaces
+    host = "0.0.0.0"
     port = 8000
     
-    print("🤖 Whisper FastAPI Service para tutorial_pkg")
-    print("=" * 50)
-    print(f"🌐 Servidor: http://{host}:{port}")
-    print(f"📊 Health check: http://{host}:{port}/health")
-    print(f"📈 Estadísticas: http://{host}:{port}/stats")
-    print("=" * 50)
+    print("Whisper FastAPI Service - Thread Safe para tutorial_pkg")
+    print("=" * 60)
+    print(f"Servidor: http://{host}:{port}")
+    print(f"Health check: http://{host}:{port}/health")
+    print(f"Estadísticas: http://{host}:{port}/stats")
+    print("MODO: CPU-only thread-safe")
+    print("=" * 60)
     
     # Verificar dependencias críticas
     if not WHISPER_AVAILABLE:
-        print("❌ ADVERTENCIA: Whisper no está disponible")
+        print("ADVERTENCIA: Whisper no está disponible")
         print("   Instalar con: pip install openai-whisper")
     
     if not ROS2_AVAILABLE:
-        print("❌ ADVERTENCIA: ROS2 no está disponible")
+        print("ADVERTENCIA: ROS2 no está disponible")
         print("   Ejecutar: source /opt/ros/humble/setup.bash")
-    
-    if not NUMPY_AVAILABLE:
-        print("⚠️ ADVERTENCIA: numpy no disponible - funcionalidad reducida")
-        print("   Instalar con: pip install numpy")
     
     # Ejecutar servidor
     try:
         uvicorn.run(
-            "tutorial_pkg.whisper_fastapi_service:app",
+            app,
             host=host,
             port=port,
             log_level="info",
-            reload=False,  # Deshabilitado para evitar problemas con ROS2
-            access_log=True
+            reload=False,
+            access_log=True,
+            workers=1  # CRÍTICO: Solo 1 worker para evitar conflictos
         )
     except KeyboardInterrupt:
-        print("\n🛑 Servicio detenido por el usuario")
+        print("\nServicio detenido por el usuario")
     except Exception as e:
-        print(f"❌ Error ejecutando servidor: {e}")
+        print(f"Error ejecutando servidor: {e}")
 
 if __name__ == "__main__":
     main()

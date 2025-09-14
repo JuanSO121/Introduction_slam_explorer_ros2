@@ -52,3 +52,6 @@ Thumbs.db
 # ===============================
 *.tmp
 *~
+
+whisper_venv
+whisper_venv_clean
