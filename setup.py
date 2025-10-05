@@ -195,6 +195,8 @@ setup(
             'obstacle_diagnostics = tutorial_pkg.obstacle_diagnostics:main',
             
             'whisper_fastapi_service = tutorial_pkg.whisper_fastapi_service:main',
+            'exploration_arbiter = tutorial_pkg.exploration_arbiter:main',
+
         ],
     },
     python_requires='>=3.8',

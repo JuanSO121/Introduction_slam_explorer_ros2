@@ -2,7 +2,7 @@
 """
 Launch file maestro integrado para tutorial_pkg - VERSIÓN CORREGIDA
 Combina exploración autónoma con control por voz IA
-Ubicación: ~/ros2_ws/src/tutorial_pkg/launch/integrated_exploration_launch_fixed.py
+Ubicación: ~/ros2_ws/src/tutorial_pkg/launch/integrated_exploration_launch.py
 """
 
 import os
@@ -251,12 +251,47 @@ def launch_setup(context, *args, **kwargs):
             print("❌ Nav2 navigation launch file not found")
     except Exception as e:
         print(f"❌ Warning: Nav2 not available: {e}")
+        
+    # =================================================================
+    # 5.2. SISTEMA DE ARBITRAJE CENTRAL (NUEVA FUNCIONALIDAD)
+    # =================================================================
+    exploration_arbiter = TimerAction(
+        period=8.0,  # Iniciar antes que otros sistemas de control
+        actions=[
+            Node(
+                package='tutorial_pkg',
+                executable='exploration_arbiter',
+                name='exploration_arbiter',
+                output='screen',
+                parameters=[{
+                    'use_sim_time': use_sim_time,
+                    'voice_command_timeout': 10.0,
+                    'emergency_timeout': 30.0,
+                    'priority_override_enabled': True
+                }],
+                remappings=[
+                    ('/voice_commands', '/voice_commands'),
+                    ('/voice_feedback', '/voice_feedback'),
+                    ('/exploration_control', '/exploration_control'),
+                    ('/monitor_status', '/monitor_status'),
+                    ('/cmd_vel_input', '/cmd_vel_input'),
+                    ('/exploration_enabled', '/exploration_enabled'),
+                    ('/voice_control_enabled', '/voice_control_enabled'),
+                    ('/arbiter_status', '/arbiter_status'),
+                    ('/cmd_vel', '/cmd_vel'),
+                    ('/goal_pose', '/goal_pose')
+                ]
+            )
+        ]
+    )
+    actions.append(exploration_arbiter)
+    print("🎯 Sistema de Arbitraje configurado")
     
     # =================================================================
     # 6. MONITOR DE EXPLORACIÓN AVANZADO
     # =================================================================
     exploration_monitor = TimerAction(
-        period=11.0,
+        period=12.0,
         actions=[
             Node(
                 package='tutorial_pkg',
@@ -275,7 +310,9 @@ def launch_setup(context, *args, **kwargs):
                     ('/odom', '/odom'),
                     ('/scan', '/scan'),
                     ('/cmd_vel', '/cmd_vel'),
-                    ('/goal_pose', '/goal_pose')
+                    ('/goal_pose', '/goal_pose'),
+                    ('/exploration_enabled', '/exploration_enabled'),  
+                    ('/arbiter_status', '/arbiter_status')       
                 ]
             )
         ]
@@ -292,7 +329,7 @@ def launch_setup(context, *args, **kwargs):
         condition=IfCondition(enable_voice_control),
         actions=[
             TimerAction(
-                period=13.0,
+                period=14.0,
                 actions=[
                     Node(
                         package='tutorial_pkg',
@@ -312,7 +349,10 @@ def launch_setup(context, *args, **kwargs):
                             ('/voice_commands', '/voice_commands'),
                             ('/voice_feedback', '/voice_feedback'),
                             ('/ai_context', '/ai_context'),
-                            ('/exploration_control', '/exploration_control')
+                            ('/exploration_control', '/exploration_control'),
+                            ('/voice_control_enabled', '/voice_control_enabled'), 
+                            ('/arbiter_status', '/arbiter_status'),             
+                            ('/cmd_vel_input', '/cmd_vel_input')                 
                         ]
                     )
                 ]
@@ -326,7 +366,7 @@ def launch_setup(context, *args, **kwargs):
         condition=IfCondition(enable_voice_control),
         actions=[
             TimerAction(
-                period=15.0,
+                period=16.0,
                 actions=[
                     Node(
                         package='tutorial_pkg',
@@ -344,7 +384,8 @@ def launch_setup(context, *args, **kwargs):
                             ('/map', '/map'),
                             ('/ai_status', '/ai_status'),
                             ('/robot_state', '/robot_state'),
-                            ('/exploration_control', '/exploration_control')
+                            ('/exploration_control', '/exploration_control'),
+                            ('/arbiter_status', '/arbiter_status') 
                         ]
                     )
                 ]
@@ -498,6 +539,9 @@ def launch_setup(context, *args, **kwargs):
         print("✅ Exploration Restarter configurado")
     
     print(f"🚀 Sistema integrado configurado con {len(actions)} componentes")
+    print("🎯 Orden de inicio: Gazebo -> Robot -> SLAM -> Nav2 -> Arbitraje -> Monitor -> Voice -> AI")
+    print("📡 Sistema de arbitraje coordinará todos los módulos sin conflictos")
+
     return actions
 
 
@@ -575,6 +619,12 @@ def generate_launch_description():
         default_value=os.path.join(tutorial_dir, 'config', 'slam_simple.yaml'),
         description='Full path to the ROS2 parameters file for SLAM'
     )
+    
+    declare_enable_arbiter_cmd = DeclareLaunchArgument(
+    'enable_arbiter',
+    default_value='true',
+    description='Enable exploration arbiter system for conflict resolution'
+)
 
     return LaunchDescription([
         # Argumentos de configuración
@@ -589,6 +639,7 @@ def generate_launch_description():
         declare_map_save_path_cmd,
         declare_params_file_cmd,
         declare_slam_params_file_cmd,
+        declare_enable_arbiter_cmd,
         
         # Sistema integrado
         OpaqueFunction(function=launch_setup)

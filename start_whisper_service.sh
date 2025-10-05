@@ -1,6 +1,6 @@
 #!/bin/bash
 # Script mejorado para iniciar el servicio Whisper FastAPI con correcciones
-# Ubicación: ~/ros2_ws/src/tutorial_pkg/start_whisper_service_fixed.sh
+# Ubicación: ~/ros2_ws/src/tutorial_pkg/start_whisper_service.sh
 
 set -e
 

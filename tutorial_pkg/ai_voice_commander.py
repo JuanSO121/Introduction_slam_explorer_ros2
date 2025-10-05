@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Integración de Control por Voz con IA para TurtleBot3 Explorer - CORREGIDO
+Integración de Control por Voz con IA para TurtleBot3 Explorer
 Ubicación: ~/ros2_ws/src/tutorial_pkg/tutorial_pkg/ai_voice_commander.py
 """
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import String, Bool
 from geometry_msgs.msg import Twist
 import re
 import time
@@ -17,7 +17,7 @@ class AIVoiceCommander(Node):
     def __init__(self):
         super().__init__('ai_voice_commander')
         
-        # Declarar parámetros con valores por defecto (IMPORTANTE para evitar errores)
+        # Declarar parámetros con valores por defecto
         self.declare_parameter('linear_speed_default', 0.2)
         self.declare_parameter('angular_speed_default', 0.3)
         self.declare_parameter('auto_stop_timeout', 5.0)
@@ -54,17 +54,31 @@ class AIVoiceCommander(Node):
             self.ai_status_callback,
             10
         )
+
+        # === NUEVOS SUSCRIPTORES (Arbitraje) ===
+        self.voice_control_enable_sub = self.create_subscription(
+            Bool, '/voice_control_enabled', self.voice_control_enable_callback, 10)
+        self.arbiter_status_sub = self.create_subscription(
+            String, '/arbiter_status', self.arbiter_status_callback, 10)
         
         # Publicadores
         self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
         self.feedback_publisher = self.create_publisher(String, '/voice_feedback', 10)
         self.ai_context_publisher = self.create_publisher(String, '/ai_context', 10)
         self.exploration_control_publisher = self.create_publisher(String, '/exploration_control', 10)
+
+        # === NUEVO PUBLICADOR (Arbitraje) ===
+        self.cmd_vel_input_pub = self.create_publisher(Twist, '/cmd_vel_input', 10)
         
         # Variables de estado
         self.current_velocity = Twist()
         self.exploration_active = False
         self.last_command_time = time.time()
+        
+        # === NUEVAS VARIABLES DE CLASE (Arbitraje) ===
+        self.voice_control_enabled = True    # Controlado por arbitraje
+        self.arbiter_connected = False       # Conexión con sistema de arbitraje
+        self.pending_commands = []           # Cola de comandos pendientes
         
         # Estadísticas
         self.command_stats = {
@@ -73,6 +87,7 @@ class AIVoiceCommander(Node):
             'failed_commands': 0,
             'session_start': time.time()
         }
+
         
         # Mapeo de comandos más robusto
         self.command_map = {
@@ -149,6 +164,46 @@ class AIVoiceCommander(Node):
             self.get_logger().info(f'🧠 IA: {message}')
         except:
             self.get_logger().debug(f'🧠 IA: {msg.data}')
+            
+    def voice_control_enable_callback(self, msg):
+        """Callback para habilitar/deshabilitar control por voz desde arbitraje"""
+        self.voice_control_enabled = msg.data
+        status = "habilitado" if msg.data else "deshabilitado"
+        self.get_logger().info(f"🎯 Control por voz {status} por arbitraje")
+        
+        if not msg.data and self.pending_commands:
+            self.get_logger().info(f"🗑️ Limpiando {len(self.pending_commands)} comandos pendientes")
+            self.pending_commands.clear()
+
+    def arbiter_status_callback(self, msg):
+        """Procesar estado del sistema de arbitraje"""
+        try:
+            if msg.data.startswith('{'):
+                status_data = json.loads(msg.data)
+                if status_data.get('event') == 'mode_change':
+                    current_mode = status_data.get('current_mode')
+                    self.arbiter_connected = True
+                    if current_mode == 'voice_control':
+                        self.voice_control_enabled = True
+                        self.get_logger().info("🎤 Modo control por voz activado por arbitraje")
+                        self.process_pending_commands()
+                    else:
+                        self.voice_control_enabled = False
+                        self.get_logger().info(f"⏸️ Control por voz pausado - modo activo: {current_mode}")
+            else:
+                self.get_logger().debug(f"🎯 Arbitraje: {msg.data}")
+        except Exception as e:
+            self.get_logger().error(f"Error procesando estado de arbitraje: {e}")
+
+    def process_pending_commands(self):
+        """Procesar comandos pendientes cuando se habilita control por voz"""
+        if self.pending_commands and self.voice_control_enabled:
+            self.get_logger().info(f"📝 Procesando {len(self.pending_commands)} comandos pendientes")
+            while self.pending_commands and self.voice_control_enabled:
+                command = self.pending_commands.pop(0)
+                self.get_logger().info(f"⚡ Ejecutando comando pendiente: {command}")
+                self._execute_command_direct(command)
+
     
     def handle_unknown_command(self, command_text: str):
         """Manejo mejorado de comandos desconocidos"""
@@ -199,40 +254,77 @@ class AIVoiceCommander(Node):
     
     # === COMANDOS DE MOVIMIENTO ===
     def move_forward(self):
-        """Mover adelante con velocidad configurada"""
+        """Mover robot hacia adelante"""
+        if not self.voice_control_enabled:
+            self.publish_feedback("Comando ignorado - control por voz deshabilitado")
+            return
+            
         self.current_velocity.linear.x = self.linear_speed
         self.current_velocity.angular.z = 0.0
-        self.cmd_vel_publisher.publish(self.current_velocity)
+        
+        # Publicar tanto al arbitraje como directamente
+        self.cmd_vel_input_pub.publish(self.current_velocity)  # Para arbitraje
+        self.cmd_vel_publisher.publish(self.current_velocity)  # Directo
+        
         self.publish_feedback(f'Avanzando a {self.linear_speed:.2f} m/s')
-    
+        self.get_logger().info('Moviendo adelante')
+
     def move_backward(self):
-        """Mover atrás"""
+        """Mover robot hacia atrás"""
+        if not self.voice_control_enabled:
+            self.publish_feedback("Comando ignorado - control por voz deshabilitado")
+            return
+            
         self.current_velocity.linear.x = -self.linear_speed
         self.current_velocity.angular.z = 0.0
+        
+        self.cmd_vel_input_pub.publish(self.current_velocity)
         self.cmd_vel_publisher.publish(self.current_velocity)
+        
         self.publish_feedback(f'Retrocediendo a {self.linear_speed:.2f} m/s')
-    
+        self.get_logger().info('Moviendo atrás')
+
     def turn_left(self):
-        """Girar izquierda"""
+        """Girar robot a la izquierda"""
+        if not self.voice_control_enabled:
+            self.publish_feedback("Comando ignorado - control por voz deshabilitado")
+            return
+            
         self.current_velocity.linear.x = 0.0
         self.current_velocity.angular.z = self.angular_speed
+        
+        self.cmd_vel_input_pub.publish(self.current_velocity)
         self.cmd_vel_publisher.publish(self.current_velocity)
+        
         self.publish_feedback(f'Girando izquierda a {self.angular_speed:.2f} rad/s')
-    
+        self.get_logger().info('Girando izquierda')
+
     def turn_right(self):
-        """Girar derecha"""
+        """Girar robot a la derecha"""
+        if not self.voice_control_enabled:
+            self.publish_feedback("Comando ignorado - control por voz deshabilitado")
+            return
+            
         self.current_velocity.linear.x = 0.0
         self.current_velocity.angular.z = -self.angular_speed
+        
+        self.cmd_vel_input_pub.publish(self.current_velocity)
         self.cmd_vel_publisher.publish(self.current_velocity)
+        
         self.publish_feedback(f'Girando derecha a {self.angular_speed:.2f} rad/s')
-    
+        self.get_logger().info('Girando derecha')
+
     def stop_robot(self):
-        """Detener robot completamente"""
+        """Detener completamente el robot"""
+        # Stop siempre funciona, independientemente del estado
         self.current_velocity.linear.x = 0.0
         self.current_velocity.angular.z = 0.0
+        
+        self.cmd_vel_input_pub.publish(self.current_velocity)
         self.cmd_vel_publisher.publish(self.current_velocity)
-        self.publish_feedback('Robot detenido')
-        self.get_logger().info('🛑 Robot detenido por comando')
+        
+        self.publish_feedback('Robot detenido completamente')
+        self.get_logger().info('Robot detenido')
     
     def speed_up(self):
         """Aumentar velocidad"""
@@ -315,6 +407,26 @@ class AIVoiceCommander(Node):
         
         self.publish_feedback(stats_msg)
         self.get_logger().info(f'📈 {stats_msg}')
+        
+    def get_robot_state_summary(self) -> Dict:
+        """Obtener resumen del estado actual del robot"""
+        return {
+            'exploration_active': self.exploration_active,
+            'voice_control_enabled': self.voice_control_enabled,  # NUEVO
+            'arbiter_connected': self.arbiter_connected,          # NUEVO
+            'pending_commands_count': len(self.pending_commands), # NUEVO
+            'current_velocity': {
+                'linear': self.current_velocity.linear.x,
+                'angular': self.current_velocity.angular.z
+            },
+            'speed_settings': {
+                'linear_speed': self.linear_speed,
+                'angular_speed': self.angular_speed
+            },
+            'ai_integration': self.ai_integration_active,
+            'last_command_time': self.last_command_time,
+            'session_duration': time.time() - self.command_stats['session_start']
+        }
     
     def emergency_stop(self):
         """Parada de emergencia"""

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
 Monitor avanzado de exploración que soluciona problemas de atascamiento
-y mejora la cobertura de exploración.
+y mejora la cobertura de exploración - VERSIÓN CORREGIDA
+Respeta comandos de control por voz
 """
 
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist, PoseStamped, Pose
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from sensor_msgs.msg import LaserScan
 from nav2_msgs.srv import ClearEntireCostmap
 from nav2_msgs.action import NavigateToPose
@@ -19,11 +20,11 @@ import math
 from scipy import ndimage
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 import cv2
-
+import json
 
 class AdvancedExplorationMonitor(Node):
     def __init__(self):
-        super().__init__('exploration_monitor')  # Cambiado de 'advanced_exploration_monitor'
+        super().__init__('exploration_monitor')
         
         # QoS profiles
         qos_reliable = QoSProfile(
@@ -42,15 +43,33 @@ class AdvancedExplorationMonitor(Node):
         self.last_position = None
         self.position_stuck_time = 0
         self.explored_frontiers = set()
-        self.last_position_time = time.time()  # Inicializar esta variable
+        self.last_position_time = time.time()
+        
+        # NUEVAS VARIABLES PARA CONTROL POR VOZ
+        self.voice_control_active = False
+        self.exploration_paused_by_voice = False
+        self.last_voice_command = ""
+        self.voice_override_time = 0
         
         # Parámetros optimizados
-        self.map_growth_timeout = 45.0      # 45s sin crecimiento = problema
-        self.position_stuck_timeout = 30.0   # 30s en misma posición = atascado
-        self.min_frontier_distance = 1.5    # Distancia mínima entre fronteras
-        self.max_exploration_distance = 8.0  # Máxima distancia para explorar
-        self.frontier_history_size = 50     # Recordar últimas 50 fronteras
-        
+        self.map_growth_timeout = 45.0
+        self.position_stuck_timeout = 30.0
+        self.min_frontier_distance = 1.5
+        self.max_exploration_distance = 8.0
+        self.frontier_history_size = 50
+        self.voice_override_duration = 10.0  # 10 segundos de pausa tras comando de voz
+        # === NUEVAS VARIABLES PARA INTEGRACIÓN CON ARBITRAJE ===
+        self.exploration_enabled = True  # Controlado por el arbitraje
+        self.arbiter_override = False    # Override del sistema de arbitraje
+
+        # === NUEVO SUSCRIPTOR ===
+        # Agregar después de la línea con voice_feedback_sub:
+        self.exploration_enable_sub = self.create_subscription(
+            Bool, '/exploration_enabled', self.exploration_enable_callback, qos_reliable)
+
+        # Suscriptor para estado del arbitraje
+        self.arbiter_status_sub = self.create_subscription(
+            String, '/arbiter_status', self.arbiter_status_callback, qos_reliable)
         # Subscribers
         self.map_sub = self.create_subscription(
             OccupancyGrid, '/map', self.map_callback, qos_reliable)
@@ -64,12 +83,24 @@ class AdvancedExplorationMonitor(Node):
         self.cmd_vel_sub = self.create_subscription(
             Twist, '/cmd_vel', self.cmd_vel_callback, qos_reliable)
         
+        # NUEVO: Escuchar comandos de control de exploración
+        self.exploration_control_sub = self.create_subscription(
+            String, '/exploration_control', self.exploration_control_callback, qos_reliable)
+        
+        # NUEVO: Escuchar feedback de comandos de voz
+        self.voice_feedback_sub = self.create_subscription(
+            String, '/voice_feedback', self.voice_feedback_callback, qos_reliable)
+        
         # Publishers
         self.goal_pub = self.create_publisher(
             PoseStamped, '/goal_pose', qos_reliable)
         
         self.emergency_stop_pub = self.create_publisher(
             Twist, '/cmd_vel', qos_reliable)
+        
+        # NUEVO: Publisher para status del monitor
+        self.monitor_status_pub = self.create_publisher(
+            String, '/monitor_status', qos_reliable)
         
         # Action clients
         self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
@@ -81,11 +112,139 @@ class AdvancedExplorationMonitor(Node):
         self.clear_global_costmap = self.create_client(
             ClearEntireCostmap, '/global_costmap/clear_entirely_global_costmap')
         
-        # Timer para monitoreo
-        self.monitor_timer = self.create_timer(10.0, self.monitor_exploration)
-        self.recovery_timer = self.create_timer(5.0, self.check_recovery_needed)
+        # Timer para monitoreo (reducido para mejor respuesta)
+        self.monitor_timer = self.create_timer(5.0, self.monitor_exploration)
+        self.recovery_timer = self.create_timer(3.0, self.check_recovery_needed)
         
-        self.get_logger().info("🚀 Monitor Avanzado de Exploración iniciado")
+        self.get_logger().info("🚀 Monitor Avanzado de Exploración iniciado con control por voz")
+    
+    def exploration_control_callback(self, msg):
+        """NUEVO: Manejar comandos de control de exploración"""
+        command = msg.data.lower()
+        current_time = time.time()
+        
+        self.get_logger().info(f"🎮 Comando de control recibido: {command}")
+        
+        if command in ["start_exploration", "resume_exploration"]:
+            self.exploration_paused_by_voice = False
+            self.voice_control_active = False
+            self.last_voice_command = command
+            self.publish_monitor_status("exploration_resumed_by_voice")
+            self.get_logger().info("▶️ Exploración reanudada por comando de voz")
+            
+        elif command in ["pause_exploration", "finish_exploration"]:
+            self.exploration_paused_by_voice = True
+            self.voice_control_active = True
+            self.voice_override_time = current_time
+            self.last_voice_command = command
+            self.publish_monitor_status("exploration_paused_by_voice")
+            self.get_logger().info("⏸️ Exploración pausada por comando de voz")
+            
+        elif command == "emergency_stop":
+            self.exploration_paused_by_voice = True
+            self.voice_control_active = True
+            self.voice_override_time = current_time
+            self.last_voice_command = command
+            self.emergency_stop()
+            self.publish_monitor_status("emergency_stop_by_voice")
+            self.get_logger().warning("🚨 PARADA DE EMERGENCIA por comando de voz")
+    
+    def voice_feedback_callback(self, msg):
+        """NUEVO: Procesar feedback de comandos de voz para detectar detenciones"""
+        feedback = msg.data.lower()
+        current_time = time.time()
+        
+        # Detectar comandos de detención en el feedback
+        stop_indicators = [
+            "robot detenido",
+            "exploración pausada", 
+            "parada de emergencia",
+            "detenido por comando",
+            "pausada",
+            "finalizada"
+        ]
+        
+        if any(indicator in feedback for indicator in stop_indicators):
+            self.voice_control_active = True
+            self.exploration_paused_by_voice = True
+            self.voice_override_time = current_time
+            self.get_logger().info(f"⏸️ Detección automática de pausa por voz: {feedback}")
+            self.publish_monitor_status("auto_pause_detected")
+    
+    def exploration_enable_callback(self, msg):
+        """Callback para habilitar/deshabilitar exploración desde arbitraje"""
+        self.exploration_enabled = msg.data
+        self.get_logger().info(f"🎯 Exploración {'habilitada' if msg.data else 'deshabilitada'} por arbitraje")
+        
+        if not msg.data:
+            # Si se deshabilita, detener robot inmediatamente
+            self.emergency_stop()
+            self.voice_control_active = False
+            self.exploration_paused_by_voice = True
+            self.arbiter_override = True
+        else:
+            # Si se habilita, permitir exploración
+            self.exploration_paused_by_voice = False
+            self.arbiter_override = False
+
+    def arbiter_status_callback(self, msg):
+        """Procesar actualizaciones de estado del arbitraje"""
+        try:
+            status_data = json.loads(msg.data)
+            if status_data.get('event') == 'mode_change':
+                current_mode = status_data.get('current_mode')
+                
+                if current_mode == 'autonomous_exploration':
+                    self.exploration_enabled = True
+                    self.arbiter_override = False
+                    self.get_logger().info("🗺️ Modo exploración automática activado por arbitraje")
+                else:
+                    self.exploration_enabled = False
+                    self.arbiter_override = True
+                    self.get_logger().info(f"⏸️ Exploración pausada - modo activo: {current_mode}")
+        except Exception as e:
+            self.get_logger().error(f"Error procesando estado de arbitraje: {e}")
+
+    
+    def publish_monitor_status(self, status):
+        """NUEVO: Publicar estado del monitor"""
+        try:
+            status_msg = String()
+            status_msg.data = f"{status}|paused:{self.exploration_paused_by_voice}|voice_active:{self.voice_control_active}"
+            self.monitor_status_pub.publish(status_msg)
+        except Exception as e:
+            self.get_logger().error(f"Error publicando status: {e}")
+    
+    def is_voice_control_active(self):
+        """Verificar si el control por voz o arbitraje está activo"""
+        current_time = time.time()
+        
+        # PRIORIDAD MÁXIMA: Override del arbitraje
+        if self.arbiter_override:
+            return True
+        
+        # Si la exploración está deshabilitada por arbitraje
+        if not self.exploration_enabled:
+            return True
+        
+        # Verificación original de control por voz
+        if (self.voice_control_active and 
+            current_time - self.voice_override_time > self.voice_override_duration):
+            
+            if self.last_voice_command not in ["pause_exploration", "finish_exploration"]:
+                self.voice_control_active = False
+                self.exploration_paused_by_voice = False
+                self.get_logger().info("🔄 Control por voz expirado, verificando arbitraje...")
+        
+        return (self.voice_control_active or 
+                self.exploration_paused_by_voice or 
+                not self.exploration_enabled)
+    
+    def emergency_stop(self):
+        """Parada de emergencia inmediata"""
+        stop_cmd = Twist()
+        self.emergency_stop_pub.publish(stop_cmd)
+        self.get_logger().error("🛑 PARADA DE EMERGENCIA EJECUTADA")
     
     def map_callback(self, msg):
         """Procesa actualizaciones del mapa y detecta crecimiento"""
@@ -97,7 +256,7 @@ class AdvancedExplorationMonitor(Node):
         new_known_cells = np.sum(np.array(msg.data) >= 0)
         
         # Detectar crecimiento significativo del mapa
-        if new_known_cells > old_known_cells + 20:  # Mínimo 20 celdas nuevas
+        if new_known_cells > old_known_cells + 20:
             self.last_map_growth = time.time()
             self.get_logger().debug(f"Mapa creció: {new_known_cells - old_known_cells} celdas")
     
@@ -213,6 +372,16 @@ class AdvancedExplorationMonitor(Node):
     
     def send_exploration_goal(self, frontier):
         """Envía un objetivo de exploración a una frontera"""
+        # VERIFICACIÓN CRÍTICA: Arbitraje tiene prioridad máxima
+        if not self.exploration_enabled:
+            self.get_logger().info("⏸️ Objetivo omitido - exploración deshabilitada por arbitraje")
+            return False
+            
+        # VERIFICACIÓN CRÍTICA ORIGINAL: No enviar objetivos si el control por voz está activo
+        if self.is_voice_control_active():
+            self.get_logger().info("⏸️ Objetivo de exploración omitido - control por voz activo")
+            return False
+        
         try:
             goal_msg = PoseStamped()
             goal_msg.header.frame_id = 'map'
@@ -243,7 +412,6 @@ class AdvancedExplorationMonitor(Node):
             
             # Mantener tamaño de historia limitado
             if len(self.explored_frontiers) > self.frontier_history_size:
-                # Remover fronteras más antiguas (simplificado)
                 self.explored_frontiers = set(list(self.explored_frontiers)[-self.frontier_history_size//2:])
             
             self.get_logger().info(
@@ -258,6 +426,10 @@ class AdvancedExplorationMonitor(Node):
     
     def clear_costmaps(self):
         """Limpia los costmaps para resolver problemas de navegación"""
+        # No limpiar costmaps si el control por voz está activo
+        if self.is_voice_control_active():
+            return
+            
         try:
             # Limpiar costmap local
             if self.clear_local_costmap.service_is_ready():
@@ -276,6 +448,16 @@ class AdvancedExplorationMonitor(Node):
     
     def perform_recovery_maneuver(self):
         """Ejecuta maniobras de recuperación cuando el robot está atascado"""
+        # VERIFICACIÓN PRIORITARIA: Arbitraje
+        if not self.exploration_enabled:
+            self.get_logger().info("⏸️ Maniobra omitida - exploración deshabilitada por arbitraje")
+            return
+            
+        # No ejecutar maniobras de recuperación si el control por voz está activo
+        if self.is_voice_control_active():
+            self.get_logger().info("⏸️ Maniobra de recuperación omitida - control por voz activo")
+            return
+        
         self.get_logger().warn("🔄 Ejecutando maniobra de recuperación...")
         
         try:
@@ -301,14 +483,22 @@ class AdvancedExplorationMonitor(Node):
             self.emergency_stop_pub.publish(stop_cmd)
             time.sleep(1.0)
             
-            # 5. Buscar nueva frontera después de actualizar mapa
             self.get_logger().info("✅ Maniobra de recuperación completada")
             
         except Exception as e:
             self.get_logger().error(f"Error en maniobra de recuperación: {e}")
+
     
     def execute_systematic_exploration(self):
         """Ejecuta exploración sistemática cuando no hay fronteras obvias"""
+        # VERIFICACIÓN PRIORITARIA: Arbitraje
+        if not self.exploration_enabled:
+            return False
+            
+        # No ejecutar exploración sistemática si el control por voz está activo
+        if self.is_voice_control_active():
+            return False
+            
         if not self.robot_pose:
             return False
         
@@ -319,19 +509,19 @@ class AdvancedExplorationMonitor(Node):
             patterns = [
                 # Patrón en espiral
                 [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0),
-                 (2.0, 0.0), (0.0, 2.0), (-2.0, 0.0), (0.0, -2.0)],
+                (2.0, 0.0), (0.0, 2.0), (-2.0, 0.0), (0.0, -2.0)],
                 
                 # Patrón en cuadrícula
                 [(2.0, 2.0), (2.0, -2.0), (-2.0, -2.0), (-2.0, 2.0),
-                 (3.0, 0.0), (0.0, 3.0), (-3.0, 0.0), (0.0, -3.0)],
+                (3.0, 0.0), (0.0, 3.0), (-3.0, 0.0), (0.0, -3.0)],
                 
                 # Patrón radial
                 [(3.0 * math.cos(i * math.pi/4), 3.0 * math.sin(i * math.pi/4)) 
-                 for i in range(8)]
+                for i in range(8)]
             ]
             
             # Seleccionar patrón basado en tiempo
-            pattern_idx = int(time.time() / 120) % len(patterns)  # Cambiar cada 2 minutos
+            pattern_idx = int(time.time() / 120) % len(patterns)
             pattern = patterns[pattern_idx]
             
             robot_x = self.robot_pose.position.x
@@ -347,7 +537,7 @@ class AdvancedExplorationMonitor(Node):
                         'x': target_x,
                         'y': target_y,
                         'distance': math.sqrt(offset_x**2 + offset_y**2),
-                        'size': 10.0  # Tamaño artificial
+                        'size': 10.0
                     }
                     
                     return self.send_exploration_goal(fake_frontier)
@@ -357,11 +547,11 @@ class AdvancedExplorationMonitor(Node):
         except Exception as e:
             self.get_logger().error(f"Error en exploración sistemática: {e}")
             return False
-    
+
     def is_valid_exploration_target(self, x, y):
         """Verifica si un objetivo de exploración es válido"""
         if not self.current_map or not self.robot_pose:
-            return True  # Asumir válido si no hay información
+            return True
         
         try:
             # Convertir coordenadas del mundo a índices del mapa
@@ -381,7 +571,7 @@ class AdvancedExplorationMonitor(Node):
             map_index = map_y * width + map_x
             if map_index < len(self.current_map.data):
                 cell_value = self.current_map.data[map_index]
-                return cell_value != 100  # No es obstáculo
+                return cell_value != 100
             
             return True
             
@@ -419,7 +609,7 @@ class AdvancedExplorationMonitor(Node):
                 "free_cells": int(free_cells),
                 "obstacle_cells": int(obstacle_cells),
                 "unknown_cells": int(unknown_cells),
-                "coverage_ratio": float(coverage_ratio),  # Asegurar que sea float
+                "coverage_ratio": float(coverage_ratio),
                 "status": "exploring",
                 "action": "continue"
             }
@@ -449,9 +639,17 @@ class AdvancedExplorationMonitor(Node):
                 "status": "error", 
                 "action": "wait"
             }
-    
+            
     def check_recovery_needed(self):
         """Verifica si se necesita recuperación inmediata"""
+        # VERIFICACIÓN PRIORITARIA: Arbitraje
+        if not self.exploration_enabled:
+            return
+            
+        # VERIFICACIÓN CRÍTICA: No hacer recuperación si control por voz está activo
+        if self.is_voice_control_active():
+            return
+        
         current_time = time.time()
         
         # Casos que requieren recuperación inmediata
@@ -478,26 +676,38 @@ class AdvancedExplorationMonitor(Node):
             self.stuck_counter = 0
             self.position_stuck_time = 0
             self.last_map_growth = current_time
+
     
     def monitor_exploration(self):
         """Función principal de monitoreo de exploración"""
         try:
             current_time = time.time()
             
+            # VERIFICACIÓN PRIORITARIA: Estado de arbitraje
+            if not self.exploration_enabled:
+                self.get_logger().debug("⏸️ Monitoreo pausado - exploración deshabilitada por arbitraje")
+                return
+            
+            # VERIFICACIÓN CRÍTICA ORIGINAL: Mostrar estado del control por voz
+            voice_status = "ACTIVO" if self.is_voice_control_active() else "INACTIVO"
+            arbiter_status = "HABILITADO" if self.exploration_enabled else "DESHABILITADO"
+            
             # Analizar cobertura actual
             coverage_analysis = self.analyze_exploration_coverage()
             
-            # Verificar que coverage_ratio existe antes de usar
+            # Log con estado de control por voz y arbitraje
             if 'coverage_ratio' in coverage_analysis:
                 self.get_logger().info(
                     f"📊 Cobertura: {coverage_analysis['coverage_ratio']:.1%}, "
                     f"Estado: {coverage_analysis['status']}, "
+                    f"Arbitraje: {arbiter_status}, "
+                    f"Control Voz: {voice_status}, "
                     f"Celdas conocidas: {coverage_analysis['known_cells']}")
-            else:
-                self.get_logger().info(
-                    f"📊 Cobertura: No disponible, "
-                    f"Estado: {coverage_analysis['status']}, "
-                    f"Celdas conocidas: {coverage_analysis['known_cells']}")
+            
+            # Si el control por voz está activo, no hacer exploración automática
+            if self.is_voice_control_active():
+                self.get_logger().debug("⏸️ Exploración automática pausada por control de voz")
+                return
             
             # Encontrar fronteras disponibles
             frontiers = self.find_frontiers()
@@ -525,11 +735,13 @@ class AdvancedExplorationMonitor(Node):
                 self.get_logger().info(
                     f"📈 Estadísticas - Cobertura: {coverage_analysis.get('coverage_ratio', 0):.1%}, "
                     f"Fronteras: {len(frontiers)}, "
-                    f"Último crecimiento: {time_since_growth:.1f}s, "
-                    f"Posición estática: {self.position_stuck_time:.1f}s")
+                    f"Arbitraje: {arbiter_status}, "
+                    f"Control Voz: {voice_status}, "
+                    f"Último crecimiento: {time_since_growth:.1f}s")
                     
         except Exception as e:
             self.get_logger().error(f"Error en monitor_exploration: {e}")
+
 
 
 def main(args=None):
